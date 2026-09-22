@@ -9,51 +9,84 @@ Run:  run.bat
 Use headphones to avoid feedback from speakers back into the mic.
 """
 
+# === Standard library ===
+import logging
 import os
 import queue
 import sys
 import threading
 import time
+import traceback
 import tkinter as tk
-from tkinter import ttk
+from logging.handlers import RotatingFileHandler
 
+# === Third party ===
+import customtkinter as ctk
 import numpy as np
 from matplotlib import colormaps
 from PIL import Image, ImageTk
-
 import sounddevice as sd
 
+# === Local ===
 from denoiser_pipeline import REPO_DIR, StreamingDenoiser
 
-MODEL_DIR = os.path.abspath(os.path.join(REPO_DIR, "models", "DeepFilterNet3"))
-HIST_FRAMES = 400  # spectrogram history length in frames (10 ms each)
-IMG_W, IMG_H = 800, 145
+# ─── Constants ───────────────────────────────────────────────────────────────
+# The DeepFilterNet python package bundles the model weights.
+MODEL_DIR = os.path.abspath(os.path.join(REPO_DIR, "..", "DeepFilterNet", "models", "DeepFilterNet3"))
+HIST_FRAMES = 400      # spectrogram history length in frames (10 ms each)
+IMG_W, IMG_H = 820, 130
 UI_FPS_MS = 100
 
+JB_MAX_SAMPLES = 480_000       # trim consumed head every ~10 s at 48 kHz
+JB_CORRECTION = 0.004          # jitter buffer drift correction factor (±0.4%)
+JB_RATIO_MIN = 1.0 - JB_CORRECTION
+JB_RATIO_MAX = 1.0 + JB_CORRECTION
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
 LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audiodenoiser.log")
+_logger = logging.getLogger("AudioDenoiser")
+_logger.setLevel(logging.DEBUG)
+_log_fmt = logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S")
+_fh = RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+_fh.setFormatter(_log_fmt)
+_logger.addHandler(_fh)
+_ch = logging.StreamHandler()
+_ch.setFormatter(_log_fmt)
+_logger.addHandler(_ch)
 
 
 def log(msg: str) -> None:
-    line = f"{time.strftime('%H:%M:%S')} {msg}"
-    try:
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except OSError:
-        pass
-    print(line, flush=True)
+    _logger.info(msg)
 
+
+# ─── Theme ───────────────────────────────────────────────────────────────────
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("dark-blue")
+
+COLOR_ON = "#22c55e"
+COLOR_ON_HOVER = "#16a34a"
+COLOR_OFF = "#ef4444"
+COLOR_OFF_HOVER = "#dc2626"
+COLOR_ACCENT = "#0ea5e9"
+COLOR_DIM = "gray55"
+COLOR_CARD_INNER = ("gray85", "gray17")
 
 MAGMA = (colormaps["magma"](np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint8)
 
+# defaults for each tab's parameter set.  floor=24 dB keeps speech audible
+# through noise (see README "Tuning"); 100 would mean unlimited suppression.
+DEFAULT_PARAMS = {"atten": 100, "mix": 100, "gain": 0, "hpf": 0, "floor": 24}
 
+
+# ─── JitterBuffer ────────────────────────────────────────────────────────────
 class JitterBuffer:
     """Bridges two audio devices running on different clocks (e.g. Audio Relay's
-    virtual mic vs. a local sound card). The playback callback pulls a fixed
+    virtual mic vs. a local sound card).  The playback callback pulls a fixed
     number of frames per tick while production drifts against it; without
     compensation you get periodic silence gaps (underrun) or dropped blocks.
 
     read() continuously micro-resamples (linear interpolation, ±0.4 % max) so
-    the consumption rate tracks the fill level around `target` samples. Real
+    the consumption rate tracks the fill level around `target` samples.  Real
     clock drift is tens of ppm, so the correction is inaudible; the buffer
     depth absorbs network jitter.
     """
@@ -65,17 +98,23 @@ class JitterBuffer:
 
     def append(self, x: np.ndarray) -> None:
         self.buf = np.concatenate([self.buf, x.astype(np.float32)])
-        if self.pos > 480000:  # trim consumed head every ~10 s
+        if self.pos > JB_MAX_SAMPLES:  # trim consumed head every ~10 s
             cut = int(self.pos)
             self.buf = self.buf[cut:]
             self.pos -= cut
+        # Safety cap: if buffer grows beyond 2x max, force trim to prevent OOM
+        if len(self.buf) > JB_MAX_SAMPLES * 2:
+            keep = int(max(0, len(self.buf) - self.target * 2))
+            self.buf = self.buf[keep:]
+            self.pos = max(0.0, self.pos - keep)
 
     def read(self, frames: int) -> np.ndarray:
         fill = len(self.buf) - self.pos
         # consumption ratio: pull faster when buffer is full, slower when
-        # starved. Correction is tiny (±0.4 %) — clock drift is tens of ppm,
+        # starved.  Correction is tiny (±0.4 %) — clock drift is tens of ppm,
         # so anything larger is audible pitch wobble.
-        ratio = float(np.clip(1.0 + (fill - self.target) / self.target * 0.004, 0.996, 1.004))
+        ratio = float(np.clip(1.0 + (fill - self.target) / self.target * JB_CORRECTION,
+                              JB_RATIO_MIN, JB_RATIO_MAX))
         idx = self.pos + np.arange(frames) * ratio
         if idx[-1] > len(self.buf) - 1:
             # underrun: emit what exists, pad silence, and re-anchor at the end
@@ -94,238 +133,524 @@ class JitterBuffer:
         self.buf = np.zeros(0, dtype=np.float32)
         self.pos = 0.0
 
-# defaults for each tab's parameter set. floor=24 dB keeps speech audible
-# through noise (see README "Tuning"); 100 would mean unlimited suppression.
-DEFAULT_PARAMS = {"atten": 100, "mix": 100, "gain": 0, "hpf": 0, "floor": 24}
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  Main Application
+# ═════════════════════════════════════════════════════════════════════════════
 
 class AudioDenoiserApp:
-    def __init__(self, root: tk.Tk):
+
+    def __init__(self, root: ctk.CTk):
         self.root = root
         root.title("AudioDenoiser")
-        root.configure(bg="#fafafa")
-        root.geometry("880x1000")
+        root.geometry("960x1060")
+        root.minsize(900, 800)
 
-        self.dn = StreamingDenoiser(MODEL_DIR)
-        self.pf = False  # current model post-filter state
-
-        # per-tab parameter values
-        self.params = {"live": dict(DEFAULT_PARAMS), "file": dict(DEFAULT_PARAMS)}
-
+        # ── state (non-UI) ───────────────────────────────────────────────
+        self.pf = False                                   # post-filter on/off
+        self.params = {"live": dict(DEFAULT_PARAMS),      # per-tab param values
+                       "file": dict(DEFAULT_PARAMS)}
         self.running = False
-        self.repeat = True  # playback of (filtered or raw) audio through output
-        self.mode: str | None = None  # None | 'denoise' | 'bypass'
+        self.repeat = False                               # start with repeat OFF
+        self.mode: str | None = None                      # None | 'denoise' | 'bypass'
         self.in_stream = None
         self.out_stream = None
         self.worker = None
         self.in_q: queue.Queue = queue.Queue(maxsize=25)
         self.jb: JitterBuffer | None = None
         self.jb_lock = threading.Lock()
+        self._dn_lock = threading.Lock()
         self.overruns = 0
         self.block_ms = 100
         self.start_time = None
         self._file_busy = False
         self.out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        # Recording state: captures raw mic + AI output simultaneously
+        self._recording = False
+        self._rec_raw = []   # list of raw mic blocks
+        self._rec_ai = []    # list of AI-processed blocks
 
+        # ── build UI, then load model ────────────────────────────────────
         self._build_ui()
+        self.tip_lbl.configure(text="⏳  Loading DeepFilterNet3 model…",
+                               text_color=COLOR_ACCENT)
+        self.root.update_idletasks()
+
+        self.dn = StreamingDenoiser(MODEL_DIR)
+        log("model loaded")
+
+        self.tip_lbl.configure(text="✓  Model loaded — select devices and press ON",
+                               text_color=COLOR_ON)
         self._update_buttons()
         self._refresh_devices()
         self.root.after(UI_FPS_MS, self._tick)
 
-    # ---------------------------------------------------------------- UI
-    def _build_ui(self):
-        header = ttk.Frame(self.root)
-        header.pack(fill="x", padx=14, pady=(12, 4))
-        ttk.Label(header, text="AudioDenoiser", font=("Segoe UI", 20, "bold")).pack(side="left")
-        ttk.Button(header, text="exit", command=self._exit).pack(side="right")
+    # ═════════════════════════════════════════════════════════════════════
+    #  UI BUILDING
+    # ═════════════════════════════════════════════════════════════════════
 
-        self.nb = ttk.Notebook(self.root)
-        self.nb.pack(fill="both", expand=True, padx=10, pady=6)
-        self.live_tab = ttk.Frame(self.nb)
-        self.files_tab = ttk.Frame(self.nb)
-        self.nb.add(self.live_tab, text="  Live  ")
-        self.nb.add(self.files_tab, text="  Files  ")
+    def _build_ui(self):
+        """Top-level layout: header + tabview."""
+        main = ctk.CTkFrame(self.root, fg_color="transparent")
+        main.pack(fill="both", expand=True, padx=20, pady=(12, 16))
+
+        self._build_header(main)
+
+        self.tabview = ctk.CTkTabview(main, corner_radius=12)
+        self.tabview.pack(fill="both", expand=True, pady=(10, 0))
+        self.tabview.add("  🎤 Live  ")
+        self.tabview.add("  📁 Files  ")
+
         self._build_live_tab()
         self._build_files_tab()
 
-    def _build_live_tab(self):
-        tab = self.live_tab
-        ctrl = ttk.Frame(tab)
-        ctrl.pack(fill="x", padx=4, pady=6)
+    def _build_header(self, parent):
+        hdr = ctk.CTkFrame(parent, fg_color="transparent")
+        hdr.pack(fill="x")
 
-        self.onoff_btn = tk.Button(
-            ctrl, text="OFF", width=10, bg="#d9534f", fg="white",
-            font=("Segoe UI", 12, "bold"), relief="flat", command=self._toggle_main,
-        )
+        # Left side: Title
+        left = ctk.CTkFrame(hdr, fg_color="transparent")
+        left.pack(side="left")
+        ctk.CTkLabel(left, text="AudioDenoiser",
+                     font=ctk.CTkFont(size=26, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(left, text="Real-time noise suppression  •  DeepFilterNet3",
+                     font=ctk.CTkFont(size=12), text_color=COLOR_DIM).pack(anchor="w")
+
+        # Center: Engine controls
+        mid = ctk.CTkFrame(hdr, fg_color="transparent")
+        mid.pack(side="left", padx=(40, 0))
+
+        self.onoff_btn = ctk.CTkButton(
+            mid, text="●  OFF", width=130, height=42,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color=COLOR_OFF, hover_color=COLOR_OFF_HOVER,
+            corner_radius=8, command=self._toggle_main)
         self.onoff_btn.pack(side="left", padx=(0, 8))
-        self.repeat_btn = tk.Button(
-            ctrl, text="Repeat: ON", width=12, bg="#5cb85c", fg="white",
-            font=("Segoe UI", 10, "bold"), relief="flat", command=self._toggle_repeat,
-        )
+
+        self.repeat_btn = ctk.CTkButton(
+            mid, text="🔊  Repeat: ON", width=160, height=38,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLOR_ON, hover_color=COLOR_ON_HOVER,
+            corner_radius=8, command=self._toggle_repeat)
         self.repeat_btn.pack(side="left", padx=(0, 16))
 
-        ttk.Label(ctrl, text="Noise Attenuation [dB]").pack(side="left")
-        self.atten_var = tk.DoubleVar(value=self.params["live"]["atten"])
-        ttk.Scale(ctrl, from_=0, to=100, variable=self.atten_var,
-                  command=lambda v: self._on_param("live", "atten", v), length=400).pack(
-            side="left", padx=8)
-        self.atten_lbl = ttk.Label(ctrl, text=str(self.params["live"]["atten"]), width=5)
-        self.atten_lbl.pack(side="left")
+        self.rec_btn = ctk.CTkButton(
+            mid, text="🔴 Record", width=110, height=32,
+            fg_color="gray25", hover_color="gray35",
+            command=self._toggle_record)
+        self.rec_btn.pack(side="left", padx=(0, 16))
 
-        self._build_fx_frame(tab, "live")
-        self._build_devices(tab)
-        self._build_stats(tab)
-        self.spec_noisy = self._spectrogram_panel(tab, "Microphone (Noisy)")
-        self.spec_enh = self._spectrogram_panel(tab, "AudioDenoiser Enhanced")
+        self.tip_lbl = ctk.CTkLabel(
+            mid, text="", font=ctk.CTkFont(size=11),
+            text_color=COLOR_DIM, wraplength=280, anchor="w", justify="left")
+        self.tip_lbl.pack(side="left")
 
-    def _build_fx_frame(self, parent, tab):
-        """Sliders: dry/wet, output gain, high-pass + post-filter checkbox."""
-        fx = ttk.LabelFrame(parent, text="Sound customization")
-        fx.pack(fill="x", padx=4, pady=4)
+        # Right side: Exit
+        ctk.CTkButton(hdr, text="✕  Exit", width=90, height=32,
+                      fg_color="gray25", hover_color="gray35",
+                      command=self._exit).pack(side="right", pady=6)
+
+    # ── helpers ──────────────────────────────────────────────────────────
+
+    def _card(self, parent, title: str):
+        """Create a titled card frame.  Returns the inner content frame."""
+        card = ctk.CTkFrame(parent, corner_radius=12)
+        card.pack(fill="x", pady=(0, 10), padx=2)
+        if title:
+            ctk.CTkLabel(card, text=title,
+                         font=ctk.CTkFont(size=14, weight="bold")
+                         ).pack(anchor="w", padx=16, pady=(12, 0))
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="x", padx=16, pady=(8, 14))
+        return inner
+
+    def _unbind_slider_scroll(self, slider):
+        """Prevent CTkSlider from capturing mouse wheel so the page scrolls."""
+        # CTkSlider changes value on scroll, and CTkScrollableFrame explicitly ignores
+        # scroll events originating from sliders. We need to overwrite the slider's scroll
+        # value change AND explicitly forward the scroll event to the parent canvas.
+        if hasattr(slider, "_canvas"):
+            def forward_scroll(e):
+                # find the nearest scrollable frame parent canvas
+                w = slider.master
+                while w:
+                    if isinstance(w, ctk.CTkScrollableFrame):
+                        if sys.platform.startswith("win"):
+                            w._parent_canvas.yview("scroll", -int(e.delta), "units")
+                        return
+                    w = w.master
+            # NO add="+" here. We WANT to overwrite the default slider scroll behavior.
+            slider._canvas.bind("<MouseWheel>", forward_scroll)
+
+
+    def _speed_up_scroll(self, scroll_frame):
+        """Increase the hardcoded scroll sensitivity of CTkScrollableFrame."""
+        original_handler = scroll_frame._mouse_wheel_all
+        def fast_scroll(event):
+            # Normal delta on Windows is 120. CTk divides by 6 (20 units).
+            # We use the raw delta (120 units) to make it 6x faster.
+            if sys.platform.startswith("win") and scroll_frame._check_if_valid_scroll(event.widget):
+                if not scroll_frame._shift_pressed and scroll_frame._parent_canvas.yview() != (0.0, 1.0):
+                    scroll_frame._parent_canvas.yview("scroll", -int(event.delta), "units")
+                    return
+            original_handler(event)
+        scroll_frame._mouse_wheel_all = fast_scroll
+
+    # ── Live tab ─────────────────────────────────────────────────────────
+
+    def _build_live_tab(self):
+        tab = self.tabview.tab("  🎤 Live  ")
+        
+        # Scrollable area for everything
+        scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        scroll.pack(fill="both", expand=True)
+        self._speed_up_scroll(scroll)
+
+        self._build_device_card(scroll)
+        self._build_controls_card(scroll, "live")
+        self._build_stats_card(scroll)
+        self._build_spectrograms_card(scroll)
+
+    def _build_device_card(self, parent):
+        c = self._card(parent, "🎙️  Device Settings")
+
+        # ── device selection ──────────────────────────────────
+        dev = ctk.CTkFrame(c, fg_color="transparent")
+        dev.pack(fill="x")
+        dev.columnconfigure(1, weight=1)
+
+        labels = ["Microphone", "Output", "Block Size"]
+        for i, txt in enumerate(labels):
+            ctk.CTkLabel(dev, text=txt, font=ctk.CTkFont(size=12)).grid(
+                row=i, column=0, sticky="w", padx=(0, 12), pady=3)
+
+        self.in_dev = ctk.CTkComboBox(dev, state="readonly", width=420,
+                                       font=ctk.CTkFont(size=11))
+        self.in_dev.grid(row=0, column=1, sticky="ew", pady=3)
+
+        self.out_dev = ctk.CTkComboBox(dev, state="readonly", width=420,
+                                        font=ctk.CTkFont(size=11))
+        self.out_dev.grid(row=1, column=1, sticky="ew", pady=3)
+
+        block_row = ctk.CTkFrame(dev, fg_color="transparent")
+        block_row.grid(row=2, column=1, sticky="w", pady=3)
+        self.block_sel = ctk.CTkComboBox(block_row, state="readonly", width=90,
+                                          values=["40", "100", "200", "400"],
+                                          font=ctk.CTkFont(size=11))
+        self.block_sel.set("100")
+        self.block_sel.pack(side="left")
+        ctk.CTkLabel(block_row, text="ms  (lower = less latency, higher = better quality)",
+                     font=ctk.CTkFont(size=10), text_color=COLOR_DIM).pack(side="left", padx=8)
+
+    def _build_controls_card(self, parent, tab: str):
+        """Audio controls: attenuation (live only) + mix/gain/hpf/floor + post-filter."""
+        title = "🎛️  Audio Controls" if tab == "live" else "🎛️  Audio Controls  (Files)"
+        c = self._card(parent, title)
+        c.columnconfigure(1, weight=1)
         setattr(self, f"fx_lbls_{tab}", {})
 
-        def add_slider(col, name, label, frm, to, init, fmt):
-            ttk.Label(fx, text=label).grid(row=0, column=col, padx=8, sticky="w")
+        cur_row = 0
+
+        if tab == "live":
+            # ── Environment Profile ──────────────────────────────────────
+            profile_fr = ctk.CTkFrame(c, fg_color="transparent")
+            profile_fr.grid(row=0, column=0, columnspan=3, sticky="ew", padx=16, pady=(0, 10))
+            
+            ctk.CTkLabel(profile_fr, text="🌍 Environment Profile:", 
+                         font=ctk.CTkFont(size=13, weight="bold")).pack(side="left", padx=(0, 12))
+            self.profile_var = tk.StringVar(value="Custom")
+            self.profile_sel = ctk.CTkComboBox(
+                profile_fr, variable=self.profile_var, 
+                values=["Custom", "Traffic (Max Suppression)", "Classroom (Babble Control)", "Home (Natural Mix)"],
+                command=self._on_profile_change, width=250, state="readonly"
+            )
+            self.profile_sel.pack(side="left")
+            
+            sep1 = ctk.CTkFrame(c, height=1, fg_color="gray30")
+            sep1.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+
+            # ── noise attenuation ────────────────────────────────────────
+            ctk.CTkLabel(c, text="Noise Attenuation",
+                         font=ctk.CTkFont(size=13, weight="bold")).grid(
+                row=2, column=0, sticky="w", padx=(0, 16), pady=6)
+            self.atten_var = tk.DoubleVar(value=self.params["live"]["atten"])
+            atten_s = ctk.CTkSlider(c, from_=0, to=100, variable=self.atten_var,
+                          command=lambda v: self._on_param("live", "atten", v),
+                          height=20)
+            atten_s.grid(row=2, column=1, sticky="ew", padx=4, pady=6)
+            self._unbind_slider_scroll(atten_s)
+            self.atten_lbl = ctk.CTkLabel(
+                c, text=f'{int(self.params["live"]["atten"])} dB',
+                font=ctk.CTkFont(size=13, weight="bold"), width=80, anchor="e")
+            self.atten_lbl.grid(row=2, column=2, padx=(8, 0), pady=6)
+
+            # visual separator
+            sep2 = ctk.CTkFrame(c, height=1, fg_color="gray30")
+            sep2.grid(row=3, column=0, columnspan=3, sticky="ew", pady=6)
+            cur_row = 4
+
+        # ── per-param sliders ────────────────────────────────────────
+        def _slider(row, name, label, frm, to, init, fmt):
+            ctk.CTkLabel(c, text=label, font=ctk.CTkFont(size=12)).grid(
+                row=row, column=0, sticky="w", padx=(0, 16), pady=5)
             var = tk.DoubleVar(value=init)
-            ttk.Scale(fx, from_=frm, to=to, variable=var,
-                      command=lambda v, n=name, t=tab: self._on_param(t, n, v),
-                      length=140).grid(row=1, column=col, padx=8)
-            lbl = ttk.Label(fx, text=fmt(init), width=6)
-            lbl.grid(row=1, column=col, padx=(156, 0), sticky="w")
+            s = ctk.CTkSlider(c, from_=frm, to=to, variable=var,
+                          command=lambda v, n=name, t=tab: self._on_param(t, n, v))
+            s.grid(row=row, column=1, sticky="ew", padx=4, pady=5)
+            self._unbind_slider_scroll(s)
+            lbl = ctk.CTkLabel(c, text=fmt(init),
+                               font=ctk.CTkFont(size=12, weight="bold"),
+                               width=80, anchor="e")
+            lbl.grid(row=row, column=2, padx=(8, 0), pady=5)
             getattr(self, f"fx_lbls_{tab}")[name] = (var, lbl, fmt)
 
         p = self.params[tab]
-        add_slider(0, "mix", "Dry / Wet mix", 0, 100, p["mix"],
-                   lambda v: f"{round(v)} %")
-        add_slider(1, "gain", "Output gain [dB]", -12, 12, p["gain"],
-                   lambda v: f"{round(v):+d} dB")
-        add_slider(2, "hpf", "High-pass filter [Hz]", 0, 400, p["hpf"],
-                   lambda v: "off" if round(v / 20) * 20 < 20 else f"{round(v / 20) * 20} Hz")
-        add_slider(3, "floor", "Max suppression [dB]", 0, 100, p["floor"],
-                   lambda v: "off" if round(v) >= 100 else f"{round(v)} dB")
+        _slider(cur_row + 0, "mix",   "Dry / Wet Mix",       0, 100, p["mix"],
+                lambda v: f"{round(v)} %")
+        _slider(cur_row + 1, "gain",  "Output Gain",        -12,  12, p["gain"],
+                lambda v: f"{round(v):+d} dB")
+        _slider(cur_row + 2, "hpf",   "High-Pass Filter",    0, 400, p["hpf"],
+                lambda v: "off" if round(v / 20) * 20 < 20
+                          else f"{round(v / 20) * 20} Hz")
+        _slider(cur_row + 3, "floor", "Max Suppression",      0, 100, p["floor"],
+                lambda v: "off" if round(v) >= 100 else f"{round(v)} dB")
+
+        # ── post-filter checkbox ─────────────────────────────────────
+        pf_row = cur_row + 4
+        siren_row = cur_row + 5
         if tab == "live":
             self.pf_var = tk.BooleanVar(value=self.pf)
-            ttk.Checkbutton(
-                fx, text="Aggressive post-filter (reloads model)",
+            self.pf_cb = ctk.CTkCheckBox(
+                c, text="Aggressive post-filter  (reloads model)",
                 variable=self.pf_var, command=self._on_pf,
-            ).grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 4))
+                font=ctk.CTkFont(size=11)
+            )
+            self.pf_cb.grid(row=pf_row, column=0, columnspan=3, sticky="w", pady=(10, 0))
+
+            self.siren_var = tk.BooleanVar(value=False)
+            self.siren_cb = ctk.CTkCheckBox(
+                c, text="🚨 Siren & Whistle Killer  (Spectral Median Filter)",
+                variable=self.siren_var, command=self._on_siren,
+                font=ctk.CTkFont(size=11)
+            )
+            self.siren_cb.grid(row=siren_row, column=0, columnspan=3, sticky="w", pady=(6, 0))
         else:
-            self.pf_var_file = self.pf_var  # shared state, one model
-            ttk.Label(
-                fx, text="Post-filter and other model options are set on the Live tab.",
-                foreground="#777",
-            ).grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 4))
-        for c in range(4):
-            fx.columnconfigure(c, weight=1)
+            self.pf_var_file = self.pf_var   # shared state, one model
+            ctk.CTkLabel(
+                c, text="Post-filter and model options are set on the Live tab.",
+                font=ctk.CTkFont(size=11), text_color=COLOR_DIM
+            ).grid(row=pf_row, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
-    def _build_devices(self, tab):
-        dev = ttk.Frame(tab)
-        dev.pack(fill="x", padx=4, pady=2)
-        ttk.Label(dev, text="Microphone:").grid(row=0, column=0, sticky="w")
-        self.in_dev = ttk.Combobox(dev, width=48, state="readonly")
-        self.in_dev.grid(row=0, column=1, padx=6, pady=2)
-        ttk.Label(dev, text="Output:").grid(row=1, column=0, sticky="w")
-        self.out_dev = ttk.Combobox(dev, width=48, state="readonly")
-        self.out_dev.grid(row=1, column=1, padx=6, pady=2)
-        ttk.Label(dev, text="Block size:").grid(row=2, column=0, sticky="w")
-        self.block_sel = ttk.Combobox(
-            dev, width=8, state="readonly", values=("40", "100", "200", "400")
-        )
-        self.block_sel.set("100")
-        self.block_sel.grid(row=2, column=1, padx=6, pady=2, sticky="w")
-        self.tip_lbl = ttk.Label(
-            dev, text="Tip: use headphones — loud speakers will echo back into the mic.",
-            foreground="#777",
-        )
-        self.tip_lbl.grid(row=3, column=1, sticky="w", padx=6)
-
-    def _build_stats(self, tab):
+    def _build_stats_card(self, parent):
+        c = self._card(parent, "📊  Live Monitor")
         self.stats_lbls = {}
-        stats = ttk.LabelFrame(tab, text="Live data")
-        stats.pack(fill="x", padx=4, pady=8)
-        cols = [
-            ("Estimated SNR", "snr"), ("Attenuation applied", "supp"),
-            ("Input level", "in"), ("Output level", "out"),
-            ("Speech presence", "spch"), ("Total latency", "lat"),
-            ("Inference / block", "infer"), ("Realtime factor", "rt"),
-            ("Blocks processed", "blocks"), ("Audio dropouts", "over"),
-            ("Model", "model"), ("Model parameters", "params"),
-            ("ERB bands / DF bins", "bins"), ("FFT / hop / sr", "fft"),
-            ("Sample rate in/out", "srio"), ("Uptime", "uptime"),
+
+        # ── primary stats: 2 × 4 mini-cards ──────────────────────────
+        grid = ctk.CTkFrame(c, fg_color="transparent")
+        grid.pack(fill="x", pady=(0, 8))
+        for col in range(4):
+            grid.columnconfigure(col, weight=1)
+
+        primary = [
+            ("Estimated SNR", "snr"),   ("Attenuation",     "supp"),
+            ("Input Level",   "in"),    ("Output Level",    "out"),
+            ("Speech Presence","spch"), ("Total Latency",   "lat"),
+            ("Inference Time","infer"), ("Realtime Factor", "rt"),
         ]
-        for i, (name, key) in enumerate(cols):
-            r, c = divmod(i, 4)
-            frame = ttk.Frame(stats)
-            frame.grid(row=r, column=c, padx=8, pady=3, sticky="w")
-            ttk.Label(frame, text=name, foreground="#666", font=("Segoe UI", 8)).pack(anchor="w")
-            lbl = ttk.Label(frame, text="—", font=("Segoe UI", 10, "bold"))
-            lbl.pack(anchor="w")
+        for i, (name, key) in enumerate(primary):
+            r, col = divmod(i, 4)
+            box = ctk.CTkFrame(grid, corner_radius=8, fg_color=COLOR_CARD_INNER)
+            box.grid(row=r, column=col, padx=3, pady=3, sticky="nsew")
+            ctk.CTkLabel(box, text=name, font=ctk.CTkFont(size=9),
+                         text_color=COLOR_DIM).pack(anchor="w", padx=10, pady=(7, 0))
+            lbl = ctk.CTkLabel(box, text="—",
+                               font=ctk.CTkFont(size=14, weight="bold"))
+            lbl.pack(anchor="w", padx=10, pady=(0, 7))
             self.stats_lbls[key] = lbl
-        for cidx in range(4):
-            stats.columnconfigure(cidx, weight=1)
+
+        # ── secondary stats: compact rows ────────────────────────────
+        info = ctk.CTkFrame(c, fg_color="transparent")
+        info.pack(fill="x")
+        for col in range(4):
+            info.columnconfigure(col, weight=1)
+
+        secondary = [
+            ("Blocks",     "blocks"), ("Dropouts",  "over"),
+            ("Uptime",     "uptime"), ("Model",     "model"),
+            ("Parameters", "params"), ("ERB / DF",  "bins"),
+            ("FFT/Hop/SR", "fft"),    ("Rate",      "srio"),
+        ]
+        for i, (name, key) in enumerate(secondary):
+            r, col = divmod(i, 4)
+            row_fr = ctk.CTkFrame(info, fg_color="transparent")
+            row_fr.grid(row=r, column=col, padx=6, pady=2, sticky="w")
+            ctk.CTkLabel(row_fr, text=f"{name}:", font=ctk.CTkFont(size=10),
+                         text_color=COLOR_DIM).pack(side="left")
+            lbl = ctk.CTkLabel(row_fr, text="—",
+                               font=ctk.CTkFont(size=10, weight="bold"))
+            lbl.pack(side="left", padx=(4, 0))
+            self.stats_lbls[key] = lbl
+
+    def _build_spectrograms_card(self, parent):
+        c = self._card(parent, "📈  Spectrograms")
+
+        for title, attr in [("Microphone  (Noisy)", "spec_noisy"),
+                            ("Enhanced Output",     "spec_enh")]:
+            ctk.CTkLabel(c, text=title, font=ctk.CTkFont(size=11),
+                         text_color=COLOR_DIM).pack(anchor="w", pady=(4, 2))
+            # Use plain tk.Label for performant 10-fps image updates
+            ph = tk.PhotoImage(width=IMG_W, height=IMG_H)
+            lbl = tk.Label(c, image=ph, bg="black", borderwidth=0,
+                           highlightthickness=0)
+            lbl.image = ph
+            lbl.pack(pady=(0, 6))
+            setattr(self, attr, lbl)
+
+    # ── Files tab ────────────────────────────────────────────────────────
 
     def _build_files_tab(self):
-        tab = self.files_tab
-        self._build_fx_frame(tab, "file")
+        tab = self.tabview.tab("  📁 Files  ")
+        scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        scroll.pack(fill="both", expand=True)
+        self._speed_up_scroll(scroll)
 
-        files = ttk.LabelFrame(tab, text="Denoise audio files (offline, best quality)")
-        files.pack(fill="x", padx=4, pady=8)
-        self.file_list = tk.Listbox(files, height=8, selectmode="extended")
-        self.file_list.grid(row=0, column=0, rowspan=3, padx=6, pady=4, sticky="we")
-        files.columnconfigure(0, weight=1)
-        ttk.Button(files, text="Add files…", command=self._add_files).grid(row=0, column=1, padx=4, pady=2, sticky="we")
-        ttk.Button(files, text="Remove selected", command=self._remove_files).grid(row=1, column=1, padx=4, pady=2, sticky="we")
-        ttk.Button(files, text="Clear", command=self._clear_files).grid(row=2, column=1, padx=4, pady=2, sticky="we")
-        self.denoise_btn = ttk.Button(files, text="Denoise files", command=self._denoise_files)
-        self.denoise_btn.grid(row=4, column=1, padx=4, pady=(8, 2), sticky="we")
-        ttk.Button(files, text="Open output folder", command=self._open_out_dir).grid(row=5, column=1, padx=4, pady=2, sticky="we")
-        self.file_status = ttk.Label(
-            files,
-            text="Supported: wav, mp3, flac, ogg, m4a, aac, wma.\n"
-                 "Output: 48 kHz mono WAV in AudioDenoiser\\output\\, named <name>_denoised.wav.\n"
-                 "Files use the sliders above (this tab) and the post-filter from the Live tab.",
-            foreground="#777", justify="left",
-        )
-        self.file_status.grid(row=4, column=0, padx=6, sticky="sw")
+        self._build_controls_card(scroll, "file")
 
-    def _spectrogram_panel(self, parent, title) -> tk.Label:
-        frame = ttk.Frame(parent)
-        frame.pack(fill="x", padx=4, pady=2)
-        ttk.Label(frame, text=title, font=("Segoe UI", 10)).pack(anchor="w")
-        ph = tk.PhotoImage(width=IMG_W, height=IMG_H)  # pixel-sized black placeholder
-        lbl = tk.Label(frame, image=ph, bg="black")
-        lbl.image = ph
-        lbl.pack()
-        return lbl
+        c = self._card(scroll, "📂  Denoise Audio Files")
+
+        # ── file list + buttons ──────────────────────────────────────
+        body = ctk.CTkFrame(c, fg_color="transparent")
+        body.pack(fill="x")
+        body.columnconfigure(0, weight=1)
+
+        # Dark-styled Listbox (no CTk equivalent)
+        self.file_list = tk.Listbox(
+            body, height=8, selectmode="extended",
+            bg="#1a1a2e", fg="#cbd5e1", selectbackground="#1f6aa5",
+            selectforeground="white", borderwidth=0,
+            highlightthickness=1, highlightcolor="#334155",
+            highlightbackground="#252540",
+            font=("Segoe UI", 10), activestyle="none")
+        self.file_list.grid(row=0, column=0, rowspan=5, sticky="nsew",
+                            padx=(0, 12), pady=2)
+
+        btns = [
+            ("📄  Add Files…",       self._add_files,    0, False),
+            ("✕   Remove Selected",  self._remove_files, 1, False),
+            ("🗑️  Clear All",        self._clear_files,  2, False),
+        ]
+        for text, cmd, row, accent in btns:
+            ctk.CTkButton(body, text=text, command=cmd, width=160, height=34,
+                          fg_color="gray25", hover_color="gray35",
+                          font=ctk.CTkFont(size=11), corner_radius=8
+                          ).grid(row=row, column=1, pady=2, sticky="ew")
+
+        # denoise button (accent)
+        self.denoise_btn = ctk.CTkButton(
+            body, text="▶  Denoise Files", command=self._denoise_files,
+            width=160, height=40, corner_radius=8,
+            font=ctk.CTkFont(size=13, weight="bold"))
+        self.denoise_btn.grid(row=3, column=1, pady=(12, 2), sticky="ew")
+
+        ctk.CTkButton(body, text="📂  Open Output Folder",
+                      command=self._open_out_dir, width=160, height=34,
+                      fg_color="gray25", hover_color="gray35",
+                      font=ctk.CTkFont(size=11), corner_radius=8
+                      ).grid(row=4, column=1, pady=2, sticky="ew")
+
+        # ── status label ─────────────────────────────────────────────
+        self.file_status = ctk.CTkLabel(
+            c,
+            text="Supported: wav, mp3, flac, ogg, m4a, aac, wma\n"
+                 "Output: 48 kHz mono WAV → AudioDenoiser\\output\\<name>_denoised.wav",
+            font=ctk.CTkFont(size=11), text_color=COLOR_DIM,
+            justify="left", anchor="w", wraplength=600)
+        self.file_status.pack(fill="x", pady=(8, 0))
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  DEVICE MANAGEMENT
+    # ═════════════════════════════════════════════════════════════════════
 
     def _refresh_devices(self):
         devs = sd.query_devices()
+        default_api = sd.default.hostapi
         ins, outs = [], []
         for i, d in enumerate(devs):
+            if d['hostapi'] != default_api:
+                continue
             if d["max_input_channels"] > 0:
                 ins.append(f"{i}: {d['name']}")
             if d["max_output_channels"] > 0:
                 outs.append(f"{i}: {d['name']}")
-        self.in_dev["values"] = ins
-        self.out_dev["values"] = outs
+        if not ins:
+            self.tip_lbl.configure(text="⚠  No input audio devices found.",
+                                   text_color=COLOR_OFF)
+        if not outs:
+            self.tip_lbl.configure(text="⚠  No output audio devices found.",
+                                   text_color=COLOR_OFF)
+        self.in_dev.configure(values=ins)
+        self.out_dev.configure(values=outs)
         din, dout = sd.default.device
-        if 0 <= din < len(ins) and ins:
+        if 0 <= din < len(devs) and ins:
             match = [t for t in ins if t.startswith(f"{din}:")]
             self.in_dev.set(match[0] if match else ins[0])
-        if 0 <= dout < len(outs) and outs:
+        if 0 <= dout < len(devs) and outs:
             match = [t for t in outs if t.startswith(f"{dout}:")]
             self.out_dev.set(match[0] if match else outs[0])
 
-    # ------------------------------------------------------- parameters
+    # ═════════════════════════════════════════════════════════════════════
+    #  PARAMETERS
+    # ═════════════════════════════════════════════════════════════════════
+
+    def _on_profile_change(self, choice: str):
+        if choice == "Custom":
+            return
+        
+        # Define the presets: (atten, mix, gain, hpf, floor, post_filter)
+        presets = {
+            "Traffic (Max Suppression)": (100, 100, 0, 160, 100, False),
+            "Classroom (Babble Control)": (100, 100, 0, 100, 100, True),
+            "Home (Natural Mix)": (60, 95, 0, 60, 40, False)
+        }
+        
+        if choice in presets:
+            atten, mix, gain, hpf, floor, pf = presets[choice]
+            
+            self._suppress_custom = True
+            
+            # Update Sliders & Values
+            self.atten_var.set(atten)
+            self._on_param("live", "atten", atten)
+            
+            self.fx_lbls_live["mix"][0].set(mix)
+            self._on_param("live", "mix", mix)
+            
+            self.fx_lbls_live["gain"][0].set(gain)
+            self._on_param("live", "gain", gain)
+            
+            self.fx_lbls_live["hpf"][0].set(hpf)
+            self._on_param("live", "hpf", hpf)
+            
+            self.fx_lbls_live["floor"][0].set(floor)
+            self._on_param("live", "floor", floor)
+            
+            # Update Post Filter
+            self.pf_var.set(pf)
+            self._on_pf()
+            
+            self._suppress_custom = False
+
     def _on_param(self, tab, name, raw):
-        """Slider moved: store value, update label, apply immediately to the
-        pipeline (the processing thread picks new values up on the next block;
-        the set_* writes are plain attribute assignments, safe to do live)."""
+        """Slider moved: store value, update label, apply to pipeline."""
+        if tab == "live" and not getattr(self, "_suppress_custom", False):
+            if hasattr(self, "profile_var") and self.profile_var.get() != "Custom":
+                self.profile_var.set("Custom")
+                
         if name == "atten":
             v = int(round(float(raw)))
             self.params[tab]["atten"] = v
             if tab == "live":
-                self.atten_lbl.configure(text=str(v))
+                self.atten_lbl.configure(text=f"{v} dB")
                 if self.mode == "denoise":
                     self.dn.set_atten_lim(v)
             return
@@ -361,29 +686,85 @@ class AudioDenoiserApp:
         self.dn.set_mask_floor(p["floor"])
 
     def _on_pf(self):
+        if not getattr(self, "_suppress_custom", False):
+            if hasattr(self, "profile_var") and self.profile_var.get() != "Custom":
+                self.profile_var.set("Custom")
+                
         if self.running:
             self.tip_lbl.configure(
-                text="Post-filter change applies the next time you turn OFF→ON.",
-                foreground="#777",
-            )
+                text="ℹ  Post-filter change applies next time you turn OFF → ON.",
+                text_color=COLOR_DIM)
             return
         self._ensure_denoiser()
+
+    def _on_siren(self):
+        """Toggle the custom Spectral Median Siren filter."""
+        enabled = self.siren_var.get()
+        if hasattr(self, "dn") and self.dn is not None:
+            self.dn.set_siren_filter(enabled)
+            log(f"Siren Killer set to {enabled}")
+
+    def _toggle_record(self):
+        """Toggle recording of raw mic + AI output to WAV files."""
+        if not self._recording:
+            # START recording
+            if not self.running:
+                self.tip_lbl.configure(
+                    text="⚠  Turn ON the denoiser first, then hit Record.",
+                    text_color=COLOR_OFF)
+                return
+            self._rec_raw.clear()
+            self._rec_ai.clear()
+            self._recording = True
+            self.rec_btn.configure(text="⏹ Stop Rec", fg_color="#B22222")
+            self.tip_lbl.configure(text="🔴  Recording... speak now, then click Stop Rec.",
+                                   text_color="#FF4444")
+            log("Recording started")
+        else:
+            # STOP recording and save files
+            self._recording = False
+            self.rec_btn.configure(text="🔴 Record", fg_color="gray25")
+            if not self._rec_raw:
+                self.tip_lbl.configure(text="⚠  Nothing was recorded.",
+                                       text_color=COLOR_OFF)
+                return
+            import soundfile as sf_lib
+            os.makedirs(self.out_dir, exist_ok=True)
+            raw = np.concatenate(self._rec_raw)
+            ai = np.concatenate(self._rec_ai)
+            # Align lengths (crossfade may cause slight difference)
+            n = min(len(raw), len(ai))
+            raw, ai = raw[:n], ai[:n]
+            raw_path = os.path.join(self.out_dir, "recorded_raw.wav")
+            ai_path = os.path.join(self.out_dir, "recorded_ai.wav")
+            sf_lib.write(raw_path, raw, self.dn.sr)
+            sf_lib.write(ai_path, ai, self.dn.sr)
+            dur = n / self.dn.sr
+            self.tip_lbl.configure(
+                text=f"✓  Saved {dur:.1f}s → recorded_raw.wav + recorded_ai.wav in output/",
+                text_color=COLOR_ON)
+            log(f"Recording saved: {dur:.1f}s  raw={raw_path}  ai={ai_path}")
+            self._rec_raw.clear()
+            self._rec_ai.clear()
 
     def _ensure_denoiser(self):
         """Rebuild the denoiser if the post-filter option changed."""
         pf = bool(self.pf_var.get())
         if self.pf == pf:
             return
-        self.file_status.configure(text="Reloading model…", foreground="#777")
+        self.tip_lbl.configure(text="⏳  Reloading model…", text_color=COLOR_ACCENT)
         self.root.update_idletasks()
         self.dn = StreamingDenoiser(MODEL_DIR, post_filter=pf)
         self.pf = pf
         log(f"model reloaded with post_filter={pf}")
-        self.file_status.configure(
-            text=f"Model reloaded (post-filter {'ON' if pf else 'OFF'}).", foreground="#777"
-        )
+        msg = f"✓  Model reloaded (post-filter {'ON' if pf else 'OFF'})"
+        self.tip_lbl.configure(text=msg, text_color=COLOR_ON)
+        self.file_status.configure(text=msg, text_color=COLOR_ON)
 
-    # ------------------------------------------------------------ on/off
+    # ═════════════════════════════════════════════════════════════════════
+    #  ENGINE CONTROL
+    # ═════════════════════════════════════════════════════════════════════
+
     # state matrix (main ON/OFF, Repeat ON/OFF):
     #   OFF/OFF  nothing runs
     #   OFF/ON   raw passthrough: mic -> speaker, unfiltered (bypass mode)
@@ -391,35 +772,65 @@ class AudioDenoiserApp:
     #   ON /OFF  denoiser runs (stats, spectrograms) but output stays silent
 
     def _toggle_main(self):
-        if self.mode is not None:
-            self._stop_all()
+        was_denoise = (self.mode == "denoise")
+        self._stop_all()
+        
+        if not was_denoise:
+            # They want to turn denoising ON
+            self._start_engine(denoise=True)
         else:
-            self._start_engine()
+            # They want to turn denoising OFF.
+            # If Repeat is ON, we fall back to raw bypass mode so they can hear the original.
+            if self.repeat:
+                self._start_engine(denoise=False)
 
     def _toggle_repeat(self):
         self.repeat = not self.repeat
-        self._update_buttons()
-        if self.mode is not None:
-            # switch live: restart engine in the new mode
-            was = self.mode
-            self._stop_all()
+        was_mode = self.mode
+        self._stop_all()
+        
+        if was_mode == "denoise":
+            # Keep denoising, just with/without output
+            self._start_engine(denoise=True)
+        else:
+            # If engine was stopped (None) and repeat turned ON -> Start bypass mode!
+            # If engine was in bypass and repeat turned OFF -> Both are OFF, do not start.
             if self.repeat:
-                self._start_engine(denoise=(was == "denoise"))
+                self._start_engine(denoise=False)
+                
+        self._update_buttons()
 
     def _update_buttons(self):
         denoise_on = self.mode == "denoise"
         self.onoff_btn.configure(
-            text="ON" if denoise_on else "OFF",
-            bg="#5cb85c" if denoise_on else "#d9534f",
-        )
+            text="●  ON" if denoise_on else "●  OFF",
+            fg_color=COLOR_ON if denoise_on else COLOR_OFF,
+            hover_color=COLOR_ON_HOVER if denoise_on else COLOR_OFF_HOVER)
+            
         if self.repeat:
             self.repeat_btn.configure(
-                text="Repeat: ON", bg="#5cb85c" if self.mode is not None else "#777"
-            )
+                text="🔊  Repeat: ON",
+                fg_color=COLOR_ON,
+                hover_color=COLOR_ON_HOVER)
         else:
-            self.repeat_btn.configure(text="Repeat: OFF", bg="#d9534f")
+            self.repeat_btn.configure(
+                text="🔇  Repeat: OFF",
+                fg_color=COLOR_OFF, hover_color=COLOR_OFF_HOVER)
+                
+        # Update tip label to explain bypass mode
+        if self.mode == "bypass":
+            self.tip_lbl.configure(text="ℹ  Bypass Mode: Playing raw original microphone audio.", text_color="yellow")
+        elif self.mode == "denoise":
+            self.tip_lbl.configure(text="⚡  Denoising Active", text_color=COLOR_ON)
+        else:
+            self.tip_lbl.configure(text="")
 
     def _start_engine(self, denoise: bool = True):
+        if self._file_busy:
+            self.tip_lbl.configure(
+                text="⚠  Cannot start live mode while file processing is active.",
+                text_color=COLOR_OFF)
+            return
         self._ensure_denoiser()
         self.block_ms = int(self.block_sel.get())
         self.block_n = self.dn.hop * self.block_ms // 10
@@ -428,12 +839,19 @@ class AudioDenoiserApp:
             self._apply_params("live")
         self.overruns = 0
         self.start_time = time.perf_counter()
-        dev_in = int(self.in_dev.get().split(":")[0])
-        dev_out = int(self.out_dev.get().split(":")[0])
+
+        try:
+            dev_in = int(self.in_dev.get().split(":")[0])
+            dev_out = int(self.out_dev.get().split(":")[0])
+        except (ValueError, IndexError):
+            self.tip_lbl.configure(
+                text="⚠  Please select both a microphone and an output device.",
+                text_color=COLOR_OFF)
+            return
 
         def in_cb(indata, frames, t, status):
             if status:
-                pass
+                log(f"input stream status: {status}")
             try:
                 self.in_q.put_nowait(indata[:, 0].copy())
             except queue.Full:
@@ -446,31 +864,31 @@ class AudioDenoiserApp:
         try:
             self.in_stream = sd.InputStream(
                 samplerate=self.dn.sr, channels=1, dtype="float32",
-                blocksize=self.block_n, device=dev_in, callback=in_cb,
-            )
+                blocksize=self.block_n, device=dev_in, callback=in_cb)
             if self.repeat:
                 self.out_stream = sd.OutputStream(
                     samplerate=self.dn.sr, channels=1, dtype="float32",
-                    blocksize=self.block_n, device=dev_out, callback=out_cb,
-                )
+                    blocksize=self.block_n, device=dev_out, callback=out_cb)
         except Exception as e:
             self.tip_lbl.configure(
-                text=f"Could not open audio device: {e}", foreground="#c00"
-            )
+                text=f"⚠  Could not open audio device: {e}",
+                text_color=COLOR_OFF)
             log(f"ERROR opening streams: {e}")
             return
+
         log(f"stream opened: mode={'denoise' if denoise else 'bypass'} "
             f"repeat={self.repeat} in={self.in_dev.get()} out={self.out_dev.get()} "
             f"block={self.block_ms}ms sr={self.dn.sr}")
         self._silent_s = 0
-        # ~1.5 blocks of backlog: absorbs clock drift + Audio Relay network
-        # jitter with ~150 ms extra delay (block+algo+cushion ≈ 280 ms total)
-        self.jb = JitterBuffer(target_samples=int(self.block_n * 1.5))
+        # ~3 blocks of backlog: absorbs clock drift + PyTorch thread jitter
+        # Enforce a minimum of 4800 samples (100ms) safety net to completely eliminate "kr kr" tearing on Windows.
+        target = max(int(self.block_n * 3.0), 4800)
+        self.jb = JitterBuffer(target_samples=target)
         self.in_stream.start()
         if self.out_stream:
             self.out_stream.start()
         self.mode = "denoise" if denoise else "bypass"
-        self.running = True  # must be set before the worker starts its loop
+        self.running = True   # must be set before the worker starts its loop
         self.worker = threading.Thread(target=self._process_loop, daemon=True)
         self.worker.start()
         self._update_buttons()
@@ -498,33 +916,46 @@ class AudioDenoiserApp:
                 blk = self.in_q.get(timeout=0.2)
             except queue.Empty:
                 continue
-            if self.mode == "bypass":
-                with self.jb_lock:
-                    self.jb.append(blk)
-                continue
+                
             try:
-                out = self.dn.process_block(blk)
+                if self.mode == "bypass":
+                    self.dn.process_bypass(blk)
+                    out = blk
+                else:
+                    out = self.dn.process_block(blk)
             except Exception:
-                import traceback
-
                 log("worker crash:\n" + traceback.format_exc())
                 self.running = False
+                self.root.after(0, self._on_worker_crash)
                 return
+
+            # Capture both raw and AI output when recording
+            if self._recording:
+                self._rec_raw.append(blk.copy())
+                self._rec_ai.append(out.copy())
+                
             if self.repeat:
                 with self.jb_lock:
                     self.jb.append(out)
 
-    # ---------------------------------------------------------- file mode
+    def _on_worker_crash(self):
+        """Called on the main thread when the audio worker thread dies."""
+        self._stop_all()
+        self.tip_lbl.configure(
+            text="⚠  Audio processing error — check audiodenoiser.log",
+            text_color=COLOR_OFF)
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  FILE MODE
+    # ═════════════════════════════════════════════════════════════════════
+
     def _add_files(self):
         from tkinter import filedialog
-
         paths = filedialog.askopenfilenames(
             title="Choose audio files to denoise",
             filetypes=[
                 ("Audio files", "*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma"),
-                ("All files", "*.*"),
-            ],
-        )
+                ("All files", "*.*")])
         existing = set(self.file_list.get(0, "end"))
         for p in paths:
             if p not in existing:
@@ -546,24 +977,25 @@ class AudioDenoiserApp:
             return
         if self.mode is not None:
             self.file_status.configure(
-                text="Turn the live denoiser OFF before processing files.", foreground="#c00"
-            )
+                text="⚠  Turn the live denoiser OFF before processing files.",
+                text_color=COLOR_OFF)
             return
         files = list(self.file_list.get(0, "end"))
         if not files:
-            self.file_status.configure(text="Add some files first.", foreground="#c00")
+            self.file_status.configure(text="⚠  Add some files first.",
+                                       text_color=COLOR_OFF)
             return
         self._ensure_denoiser()
         self._file_busy = True
         self.denoise_btn.configure(state="disabled")
+        self.onoff_btn.configure(state="disabled")     # prevent live during file
         os.makedirs(self.out_dir, exist_ok=True)
 
         def worker():
             results = []
             for i, src in enumerate(files):
                 self._file_progress = (
-                    f"Processing {i + 1}/{len(files)}: {os.path.basename(src)}"
-                )
+                    f"Processing {i + 1}/{len(files)}: {os.path.basename(src)}")
                 try:
                     stem = os.path.splitext(os.path.basename(src))[0]
                     dst = os.path.join(self.out_dir, f"{stem}_denoised.wav")
@@ -582,21 +1014,27 @@ class AudioDenoiserApp:
         self.root.after(200, self._poll_file_worker)
 
     def _poll_file_worker(self):
-        self.file_status.configure(text=self._file_progress, foreground="#777")
+        self.file_status.configure(text=f"⏳  {self._file_progress}",
+                                   text_color=COLOR_ACCENT)
         if not self._file_done:
             self.root.after(200, self._poll_file_worker)
             return
         self._file_busy = False
         self.denoise_btn.configure(state="normal")
+        self.onoff_btn.configure(state="normal")       # re-enable live button
         ok = [r for s, r in self._file_results if s == "ok"]
         fail = [r for s, r in self._file_results if s == "fail"]
-        msg = f"Done: {len(ok)} file(s) denoised → {self.out_dir}"
+        msg = f"✓  Done: {len(ok)} file(s) denoised → {self.out_dir}"
         if fail:
             msg += f"  ({len(fail)} failed — see audiodenoiser.log)"
-        self.file_status.configure(text=msg, foreground="#c00" if fail else "#2e7d32")
+        self.file_status.configure(
+            text=msg, text_color=COLOR_OFF if fail else COLOR_ON)
         log(msg)
 
-    # ------------------------------------------------------------- ticks
+    # ═════════════════════════════════════════════════════════════════════
+    #  TICK / UPDATES
+    # ═════════════════════════════════════════════════════════════════════
+
     def _tick(self):
         try:
             self._update_stats()
@@ -610,22 +1048,21 @@ class AudioDenoiserApp:
                     self._silent_s += UI_FPS_MS / 1000
                     if self._silent_s > 5:
                         self.tip_lbl.configure(
-                            text="No signal from the microphone (-90 dBFS). "
-                                 "If using Audio Relay, make sure the phone is connected "
-                                 "and streaming; otherwise pick your real mic above.",
-                            foreground="#c00",
-                        )
+                            text="⚠  No signal from microphone (−90 dBFS). "
+                                 "Check your mic is connected and streaming.",
+                            text_color=COLOR_OFF)
                 else:
                     self._silent_s = 0
                     self.tip_lbl.configure(
-                        text="Tip: use headphones — loud speakers will echo back into the mic.",
-                        foreground="#777",
-                    )
-        except Exception as e:  # keep the UI alive no matter what
+                        text="✓  Receiving audio — use headphones to avoid feedback",
+                        text_color=COLOR_ON)
+        except Exception as e:    # keep the UI alive no matter what
             log(f"UI tick error: {e!r}")
         self.root.after(UI_FPS_MS, self._tick)
 
     def _update_stats(self):
+        if self.mode != "denoise" or self.dn.stats.blocks == 0:
+            return
         st = self.dn.stats
         g = self.stats_lbls
         g["snr"].configure(text=f"{st.snr_est_db:5.1f} dB")
@@ -635,8 +1072,7 @@ class AudioDenoiserApp:
         g["spch"].configure(text=f"{st.speech_presence * 100:5.1f} %")
         total_lat = self.block_ms if self.mode == "denoise" else int(self.block_sel.get())
         g["lat"].configure(
-            text=f"{total_lat + 20:.0f} ms" if self.mode == "denoise" else "—"
-        )
+            text=f"{total_lat + 20:.0f} ms" if self.mode == "denoise" else "—")
         g["infer"].configure(text=f"{st.infer_ms:5.1f} ms")
         g["rt"].configure(text=f"{st.rt_factor:5.2f} x")
         g["blocks"].configure(text=f"{st.blocks}")
@@ -644,10 +1080,9 @@ class AudioDenoiserApp:
         g["model"].configure(text="DeepFilterNet3")
         g["params"].configure(text=f"{self.dn.n_params:,}")
         g["bins"].configure(text=f"{self.dn.nb_erb} / {self.dn.nb_df}")
-        g["fft"].configure(text=f"{self.dn.fft_size} / {self.dn.hop} / {self.dn.sr // 1000} kHz")
+        g["fft"].configure(text=f"{self.dn.fft_size}/{self.dn.hop}/{self.dn.sr // 1000}k")
         g["srio"].configure(
-            text=f"{self.dn.sr} Hz" + (f"  block {self.block_ms} ms" if self.running else "")
-        )
+            text=f"{self.dn.sr} Hz" + (f" • {self.block_ms}ms" if self.running else ""))
         if self.running and self.start_time:
             up = time.perf_counter() - self.start_time
             g["uptime"].configure(text=f"{int(up // 60):02d}:{int(up % 60):02d}")
@@ -667,20 +1102,39 @@ class AudioDenoiserApp:
             self._spec_vmax = ceiling
         self._spec_vmax = 0.9 * self._spec_vmax + 0.1 * max(ceiling, -80.0)
         norm = np.clip((arr - (self._spec_vmax - 60)) / 60.0, 0, 1)
-        rgb = MAGMA[(norm * 255).astype(np.uint8)]  # [rows, T, 3]
+        rgb = MAGMA[(norm * 255).astype(np.uint8)]    # [rows, T, 3]
         return Image.fromarray(rgb).resize((IMG_W, IMG_H), Image.BILINEAR)
 
     def _update_spectrograms(self):
-        for lbl, hist in (
-            (self.spec_noisy, self.dn.spec_hist),
-            (self.spec_enh, self.dn.enh_hist),
-        ):
-            if hist is None:
-                continue
-            img = self._render_hist(hist)
+        from PIL import ImageDraw
+        
+        is_bypass = (getattr(self, "mode", None) == "bypass")
+        
+        for lbl, is_enh in [
+            (self.spec_noisy, False),
+            (self.spec_enh, True),
+        ]:
+            if is_bypass and is_enh:
+                # In bypass mode, the AI is completely turned off to save CPU.
+                # Only blank the Enhanced output graph, leave the Microphone graph running.
+                img = Image.new("RGB", (IMG_W, IMG_H), "black")
+                draw = ImageDraw.Draw(img)
+                text = "AI OFF (BYPASS MODE)"
+                # Just center it roughly
+                draw.text((IMG_W//2 - 60, IMG_H//2 - 5), text, fill="yellow")
+            else:
+                hist = self.dn.enh_hist if is_enh else self.dn.spec_hist
+                if hist is None:
+                    continue
+                img = self._render_hist(hist)
+                
             photo = ImageTk.PhotoImage(img)
             lbl.configure(image=photo, width=IMG_W, height=IMG_H)
             lbl.image = photo
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  EXIT
+    # ═════════════════════════════════════════════════════════════════════
 
     def _exit(self):
         try:
@@ -689,11 +1143,12 @@ class AudioDenoiserApp:
             self.root.destroy()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+
 def main():
-    root = tk.Tk()
+    root = ctk.CTk()
     try:
         from ctypes import windll
-
         windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass

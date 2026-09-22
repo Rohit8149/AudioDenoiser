@@ -11,7 +11,7 @@ audio files, built on the open-source **DeepFilterNet3** speech-enhancement mode
 
 ## Quick start
 
-Double-click `run.bat`. Requires the Python 3.12 venv at `VoiceDenoiser\.venv`
+Double-click `run.bat`. Requires the Python 3.12 venv at `.venv` (in the repo root)
 (setup instructions are in the main repo README).
 
 - **Live tab:** pick Microphone and Output, then use the two switches:
