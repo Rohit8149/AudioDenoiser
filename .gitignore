@@ -1,6 +1,9 @@
-.venv/
+﻿.venv/
 DeepFilterNet/target/
 __pycache__/
 *.pyc
 *.log
 AudioDenoiser/output/
+pretrained_models/
+speaker_profile.wav
+

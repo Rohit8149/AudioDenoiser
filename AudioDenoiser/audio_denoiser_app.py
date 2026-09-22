@@ -75,7 +75,7 @@ MAGMA = (colormaps["magma"](np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint
 
 # defaults for each tab's parameter set.  floor=24 dB keeps speech audible
 # through noise (see README "Tuning"); 100 would mean unlimited suppression.
-DEFAULT_PARAMS = {"atten": 100, "mix": 100, "gain": 0, "hpf": 0, "floor": 24}
+DEFAULT_PARAMS = {"atten": 100, "mix": 100, "gain": 12, "hpf": 0, "floor": 24}
 
 
 # ─── JitterBuffer ────────────────────────────────────────────────────────────
@@ -307,6 +307,7 @@ class AudioDenoiserApp:
         self._speed_up_scroll(scroll)
 
         self._build_device_card(scroll)
+        self._build_voice_card(scroll)
         self._build_controls_card(scroll, "live")
         self._build_stats_card(scroll)
         self._build_spectrograms_card(scroll)
@@ -341,6 +342,119 @@ class AudioDenoiserApp:
         self.block_sel.pack(side="left")
         ctk.CTkLabel(block_row, text="ms  (lower = less latency, higher = better quality)",
                      font=ctk.CTkFont(size=10), text_color=COLOR_DIM).pack(side="left", padx=8)
+
+    def _build_voice_card(self, parent):
+        c = self._card(parent, "🎤  Speaker Isolation (Cancel other voices)")
+        
+        info_frm = ctk.CTkFrame(c, fg_color="transparent")
+        info_frm.pack(fill="x", pady=(0, 10))
+        
+        profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
+        has_profile = os.path.exists(profile_path)
+        
+        self.isolate_var = tk.BooleanVar(value=False)
+        self.isolate_switch = ctk.CTkSwitch(
+            info_frm, text="Isolate My Voice (Beta)",
+            variable=self.isolate_var, command=self._toggle_isolate,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            state="normal" if has_profile else "disabled"
+        )
+        self.isolate_switch.pack(side="left", padx=(0, 25))
+        
+        self.enroll_btn = ctk.CTkButton(
+            info_frm, text="🎙️ Re-enroll Voice" if has_profile else "🎙️ Enroll My Voice", 
+            width=140, height=32,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLOR_ACCENT, hover_color=COLOR_ON,
+            command=self._enroll_voice)
+        self.enroll_btn.pack(side="left", padx=(0, 10))
+
+        self.play_voice_btn = ctk.CTkButton(
+            info_frm, text="▶️ Listen", width=80, height=32,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="gray25", hover_color="gray35",
+            state="normal" if has_profile else "disabled",
+            command=self._play_voice)
+        self.play_voice_btn.pack(side="left", padx=(0, 15))
+        
+        self.enroll_prompt = ctk.CTkLabel(
+            info_frm, 
+            text="Record a 5-second sample to isolate your voice and cancel out background talking.",
+            font=ctk.CTkFont(size=11), text_color=COLOR_DIM, justify="left", wraplength=350)
+        self.enroll_prompt.pack(side="left")
+
+    def _toggle_isolate(self):
+        if self.dn is not None:
+            self.dn.isolate_speaker = self.isolate_var.get()
+            if self.isolate_var.get():
+                self.dn.reload_profile()
+
+    def _play_voice(self):
+        profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
+        if not os.path.exists(profile_path):
+            return
+            
+        try:
+            dev_out = int(self.out_dev.get().split(":")[0])
+        except (ValueError, IndexError):
+            self.enroll_prompt.configure(text="⚠️ Please select an output device first!")
+            return
+            
+        self.play_voice_btn.configure(state="disabled")
+        self.enroll_prompt.configure(text="▶️ Playing your saved Voice Print...", text_color=COLOR_ON)
+        
+        def play_task():
+            try:
+                import soundfile as sf
+                data, fs = sf.read(profile_path)
+                sd.play(data, fs, device=dev_out)
+                sd.wait()
+                self.enroll_prompt.configure(text="✅ Finished playing back your Voice Print.", text_color=COLOR_DIM)
+            except Exception as e:
+                self.enroll_prompt.configure(text=f"❌ Error playing: {e}", text_color=COLOR_OFF)
+            finally:
+                self.play_voice_btn.configure(state="normal")
+                
+        threading.Thread(target=play_task, daemon=True).start()
+
+    def _enroll_voice(self):
+        try:
+            dev_in = int(self.in_dev.get().split(":")[0])
+        except (ValueError, IndexError):
+            self.enroll_prompt.configure(text="⚠️ Please select a microphone first!")
+            return
+
+        self.enroll_btn.configure(state="disabled")
+        self.play_voice_btn.configure(state="disabled")
+        self.enroll_prompt.configure(
+            text="🔴 RECORDING (5s): Please read aloud -> 'The quick brown fox jumps over the lazy dog. I am authenticating my voice.'",
+            text_color="orange"
+        )
+        
+        def record_task():
+            try:
+                import soundfile as sf
+                # Record 5 seconds at 48000 Hz
+                audio = sd.rec(int(5 * 48000), samplerate=48000, channels=1, device=dev_in, dtype='float32')
+                sd.wait()
+                
+                profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
+                sf.write(profile_path, audio, 48000)
+                
+                self.enroll_prompt.configure(
+                    text="✅ Voice Print saved! The AI will now use this to filter out other voices.",
+                    text_color=COLOR_ON
+                )
+                self.enroll_btn.configure(text="🎙️ Re-enroll Voice")
+            except Exception as e:
+                self.enroll_prompt.configure(text=f"❌ Error recording: {e}", text_color=COLOR_OFF)
+            finally:
+                self.enroll_btn.configure(state="normal")
+                if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")):
+                    self.play_voice_btn.configure(state="normal")
+                    self.isolate_switch.configure(state="normal")
+                
+        threading.Thread(target=record_task, daemon=True).start()
 
     def _build_controls_card(self, parent, tab: str):
         """Audio controls: attenuation (live only) + mix/gain/hpf/floor + post-filter."""
@@ -608,9 +722,9 @@ class AudioDenoiserApp:
         
         # Define the presets: (atten, mix, gain, hpf, floor, post_filter)
         presets = {
-            "Traffic (Max Suppression)": (100, 100, 0, 160, 100, False),
-            "Classroom (Babble Control)": (100, 100, 0, 100, 100, True),
-            "Home (Natural Mix)": (60, 95, 0, 60, 40, False)
+            "Traffic (Max Suppression)": (100, 100, 12, 160, 100, False),
+            "Classroom (Babble Control)": (100, 100, 12, 100, 100, True),
+            "Home (Natural Mix)": (60, 95, 12, 60, 40, False)
         }
         
         if choice in presets:
@@ -684,6 +798,8 @@ class AudioDenoiserApp:
         self.dn.set_output_gain(p["gain"])
         self.dn.set_highpass(p["hpf"])
         self.dn.set_mask_floor(p["floor"])
+        if hasattr(self, "isolate_var"):
+            self.dn.isolate_speaker = self.isolate_var.get()
 
     def _on_pf(self):
         if not getattr(self, "_suppress_custom", False):

@@ -12,19 +12,23 @@ call when none is passed, which is wrong for streaming.
 import os
 import sys
 import time
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
+import scipy.signal
 import torch
 from loguru import logger
 
 REPO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "DeepFilterNet")
 sys.path.insert(0, os.path.abspath(os.path.join(REPO_DIR, "DeepFilterNet")))
 
-from df.enhance import init_df  # noqa: E402
+from df.enhance import init_df, df_features, erb, erb_norm  # noqa: E402
 from df.model import ModelParams  # noqa: E402
 from df.utils import get_norm_alpha  # noqa: E402
+from df.checkpoint import load_model  # noqa: E402
 from libdf import DF, erb  # noqa: E402
+from speaker_verifier import SpeakerVerifier  # noqa: E402
 
 MEAN_NORM_INIT = (-60.0, -90.0)
 UNIT_NORM_INIT = (0.001, 0.0001)
@@ -83,11 +87,26 @@ class StreamingDenoiser:
         self.highpass_hz = 0.0  # 0 disables
         self.mask_floor_db = 100.0  # per-bin max suppression; 100 = unlimited
         self._hpf_zi: np.ndarray | None = None
+        
+        # Initialize SpeakerVerifier in background
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.speaker_verifier = SpeakerVerifier(savedir=os.path.join(script_dir, "pretrained_models", "spkrec-ecapa-voxceleb"))
+        self._sv_buf = np.zeros(48000, dtype=np.float32)  # 1 second rolling buffer
+        self._sv_score = 1.0
+        self._sv_is_computing = False
+        self.reload_profile()
+
         self.stats = BlockStats()
         self._smooth = {"snr": 0.0, "supp": 0.0, "spch": 0.0}
         # rolling spectrogram history (linear magnitudes), rows = fft bins
         self.spec_hist: np.ndarray | None = None
         self.enh_hist: np.ndarray | None = None
+
+    def reload_profile(self):
+        """Reloads the speaker profile from disk."""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        profile_path = os.path.join(script_dir, "speaker_profile.wav")
+        self.speaker_verifier.load_profile(profile_path)
 
     def _make_grus_stateful(self) -> None:
         """The Python model discards GRU hidden state on every forward, but the
@@ -313,6 +332,37 @@ class StreamingDenoiser:
             out = out * (10 ** (self.output_gain_db / 20))
         out = out.astype(np.float32)
         
+        # ── TARGET SPEAKER EXTRACTION (VOICE ISOLATION) ──
+        if self.isolate_speaker and self.speaker_verifier.target_embedding is not None:
+            # 1. Update 1-second background watcher buffer
+            self._sv_buf = np.roll(self._sv_buf, -chunk_len)
+            self._sv_buf[-chunk_len:] = block
+            
+            # 2. Fire and forget ML extraction (self-rate-limiting)
+            if not self._sv_is_computing:
+                self._sv_is_computing = True
+                def compute_score(audio_snapshot):
+                    try:
+                        self._sv_score = self.speaker_verifier.verify_frame(audio_snapshot, fs_in=48000)
+                    finally:
+                        self._sv_is_computing = False
+                threading.Thread(target=compute_score, args=(self._sv_buf.copy(),), daemon=True).start()
+                
+            # 3. Apply the gate!
+            # Use a threshold of 0.28. We use a Fast-Attack, Slow-Release smooth gate 
+            # so it doesn't chop your words in half if the score temporarily dips.
+            if getattr(self, "_gate_gain", None) is None:
+                self._gate_gain = 1.0
+                
+            target_gain = 1.0 if self._sv_score > 0.28 else 0.001
+            
+            if target_gain > self._gate_gain:
+                self._gate_gain = target_gain # Attack instantly (open mic immediately when you speak)
+            else:
+                self._gate_gain = 0.90 * self._gate_gain + 0.10 * target_gain # Release smoothly (fade out TV)
+                
+            out *= self._gate_gain
+        
         # Micro-noise floor
         out += np.random.default_rng().normal(0, 1e-5, out.shape).astype(np.float32)
         
@@ -353,7 +403,13 @@ class StreamingDenoiser:
             return np.hstack([hist, col])[:, -400:]
 
         self.spec_hist = push(self.spec_hist, 20 * np.log10(noisy_mag.mean(axis=0) + 1e-9))
-        self.enh_hist = push(self.enh_hist, 20 * np.log10(enh_mag.mean(axis=0) + 1e-9))
+        
+        # Visually reflect the gate mute on the bottom spectrogram
+        vis_enh_mag = enh_mag.mean(axis=0)
+        if getattr(self, "_gate_gain", None) is not None:
+            vis_enh_mag *= self._gate_gain
+            
+        self.enh_hist = push(self.enh_hist, 20 * np.log10(vis_enh_mag + 1e-9))
 
         return out
 
