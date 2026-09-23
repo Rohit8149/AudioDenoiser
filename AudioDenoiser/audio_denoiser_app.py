@@ -354,12 +354,21 @@ class AudioDenoiserApp:
         
         self.isolate_var = tk.BooleanVar(value=False)
         self.isolate_switch = ctk.CTkSwitch(
-            info_frm, text="Isolate My Voice (Beta)",
+            info_frm, text="Isolate My Voice (Fast)",
             variable=self.isolate_var, command=self._toggle_isolate,
             font=ctk.CTkFont(size=12, weight="bold"),
             state="normal" if has_profile else "disabled"
         )
         self.isolate_switch.pack(side="left", padx=(0, 25))
+        
+        self.live_cocktail_var = tk.BooleanVar(value=False)
+        self.live_cocktail_switch = ctk.CTkSwitch(
+            info_frm, text="Cocktail Party Separation (3s Delay)",
+            variable=self.live_cocktail_var, command=self._toggle_cocktail,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            state="normal" if has_profile else "disabled"
+        )
+        self.live_cocktail_switch.pack(side="left", padx=(0, 25))
         
         self.enroll_btn = ctk.CTkButton(
             info_frm, text="🎙️ Re-enroll Voice" if has_profile else "🎙️ Enroll My Voice", 
@@ -388,6 +397,14 @@ class AudioDenoiserApp:
             self.dn.isolate_speaker = self.isolate_var.get()
             if self.isolate_var.get():
                 self.dn.reload_profile()
+                
+    def _toggle_cocktail(self):
+        if self.dn is not None:
+            try:
+                self.dn.set_cocktail_mode(self.live_cocktail_var.get())
+            except Exception as e:
+                log(f"Failed to load cocktail mode: {e!r}")
+                self.live_cocktail_var.set(False)
 
     def _play_voice(self):
         profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
@@ -672,6 +689,18 @@ class AudioDenoiserApp:
                       font=ctk.CTkFont(size=11), corner_radius=8
                       ).grid(row=4, column=1, pady=2, sticky="ew")
 
+        # Target Speaker Separation Switch
+        profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
+        has_profile = os.path.exists(profile_path)
+        self.file_separate_var = tk.BooleanVar(value=False)
+        self.file_separate_switch = ctk.CTkSwitch(
+            c, text="Cocktail Party Separation (Requires Voice Print)",
+            variable=self.file_separate_var,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            state="normal" if has_profile else "disabled"
+        )
+        self.file_separate_switch.pack(fill="x", pady=(15, 0), padx=10)
+
         # ── status label ─────────────────────────────────────────────
         self.file_status = ctk.CTkLabel(
             c,
@@ -876,6 +905,12 @@ class AudioDenoiserApp:
         msg = f"✓  Model reloaded (post-filter {'ON' if pf else 'OFF'})"
         self.tip_lbl.configure(text=msg, text_color=COLOR_ON)
         self.file_status.configure(text=msg, text_color=COLOR_ON)
+        
+        # Sync states
+        if hasattr(self, 'isolate_var'):
+            self.dn.isolate_speaker = self.isolate_var.get()
+        if hasattr(self, 'live_cocktail_var'):
+            self.dn.set_cocktail_mode(self.live_cocktail_var.get())
 
     # ═════════════════════════════════════════════════════════════════════
     #  ENGINE CONTROL
@@ -1109,14 +1144,49 @@ class AudioDenoiserApp:
 
         def worker():
             results = []
+            do_separate = self.file_separate_var.get()
+            
+            if do_separate:
+                try:
+                    import torch
+                    from multi_speaker_separator import MultiSpeakerSeparator
+                    import soundfile as sf
+                    self._file_progress = "Loading massive Separation AI (this takes a moment)..."
+                    separator = MultiSpeakerSeparator(device="cuda" if torch.cuda.is_available() else "cpu")
+                    profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
+                except Exception as e:
+                    log(f"Failed to load separator: {e!r}")
+                    self._file_results = [("fail", (files[0], str(e)))]
+                    self._file_done = True
+                    return
+
             for i, src in enumerate(files):
-                self._file_progress = (
-                    f"Processing {i + 1}/{len(files)}: {os.path.basename(src)}")
+                self._file_progress = f"Processing {i + 1}/{len(files)}: {os.path.basename(src)}"
                 try:
                     stem = os.path.splitext(os.path.basename(src))[0]
                     dst = os.path.join(self.out_dir, f"{stem}_denoised.wav")
-                    self._apply_params("file")
-                    r = self.dn.denoise_file(src, dst)
+                    
+                    if do_separate:
+                        def progress_cb(prog):
+                            self._file_progress = f"Separating Overlapping Voices: {int(prog*100)}%"
+                            
+                        final_audio, sr = separator.separate_and_isolate(
+                            src, profile_path, progress_callback=progress_cb
+                        )
+                        
+                        # Save the separated audio to a temp file, then denoise it to remove robotic artifacts
+                        temp_dst = os.path.join(self.out_dir, f"{stem}_temp.wav")
+                        sf.write(temp_dst, final_audio.squeeze(0).numpy(), sr)
+                        
+                        self._file_progress = f"Denoising {os.path.basename(src)}..."
+                        self._apply_params("file")
+                        r = self.dn.denoise_file(temp_dst, dst)
+                        if os.path.exists(temp_dst):
+                            os.remove(temp_dst)
+                    else:
+                        self._apply_params("file")
+                        r = self.dn.denoise_file(src, dst)
+                        
                     results.append(("ok", r))
                 except Exception as e:
                     log(f"file denoise failed for {src}: {e!r}")

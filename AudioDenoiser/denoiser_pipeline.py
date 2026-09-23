@@ -62,6 +62,8 @@ class StreamingDenoiser:
             log_level="ERROR",
             log_file=None,
         )
+        self.model = self.model.cpu()
+        self.model.eval()
         self.post_filter = post_filter
         self.p = ModelParams()
         self.nb_df = getattr(self.model, "nb_df", getattr(self.model, "df_bins", self.p.nb_df))
@@ -234,12 +236,77 @@ class StreamingDenoiser:
     # they zero-pad the boundaries, causing massive audio gaps and a 25Hz "kr kr" tearing noise.
     # 
     # This Overlap-Add Crossfader is the mathematically perfect, industry-standard solution.
-    # It passes 120ms (3 blocks) of context natively to the PyTorch model, extracts the 
-    # target middle block, and crossfades the boundaries using a Hanning window. 
+    def set_cocktail_mode(self, enabled: bool):
+        if not enabled:
+            self.cocktail_mode = False
+            self._cocktail_in_buf = []
+            self._cocktail_out_buf = []
+            return
+            
+        try:
+            if getattr(self, "cocktail_separator", None) is None:
+                import os
+                import threading
+                from multi_speaker_separator import MultiSpeakerSeparator
+                import torch
+                
+                # Load the separator (this takes a moment on first run)
+                self.cocktail_separator = MultiSpeakerSeparator(device="cuda" if torch.cuda.is_available() else "cpu")
+                profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
+                self.cocktail_separator.verifier.load_profile(profile_path)
+                
+                self._cocktail_in_buf = []
+                self._cocktail_out_buf = []
+                self._cocktail_lock = threading.Lock()
+                print("[Cocktail Mode] Separator Loaded & Initialized.")
+            self.cocktail_mode = True
+        except Exception as e:
+            self.cocktail_mode = False
+            raise e
+
+    # =========================================================================================
+    # THE HOLY GRAIL: 120ms Overlap-Add Crossfader (DO NOT MODIFY THE MATH)
     # This guarantees 0% tearing, flawless neural network memory, and no gating artifacts.
     # =========================================================================================
-    @torch.no_grad()
     def process_block(self, block: np.ndarray) -> np.ndarray:
+        """Process one block. Routes to Cocktail mode or standard DFN."""
+        if getattr(self, "cocktail_mode", False):
+            import threading
+            self._cocktail_in_buf.append(block)
+            
+            if len(self._cocktail_in_buf) >= 50:
+                chunk_to_process = np.concatenate(self._cocktail_in_buf)
+                self._cocktail_in_buf = []
+                
+                def bg_process(audio_chunk):
+                    try:
+                        clean_audio = self.cocktail_separator.separate_and_isolate_array(audio_chunk, self.sr)
+                        block_size = len(block)
+                        blocks = [clean_audio[i:i+block_size] for i in range(0, len(clean_audio), block_size) if len(clean_audio[i:i+block_size]) == block_size]
+                        
+                        # Pass the separated audio through DeepFilterNet to remove hiss/background noise!
+                        denoised_blocks = []
+                        for b in blocks:
+                            denoised_blocks.append(self._dfn_process_block(b))
+                            
+                        with self._cocktail_lock:
+                            self._cocktail_out_buf.extend(denoised_blocks)
+                    except Exception as e:
+                        print("Cocktail Async Error:", e)
+                        
+                threading.Thread(target=bg_process, args=(chunk_to_process,), daemon=True).start()
+            
+            with self._cocktail_lock:
+                if len(self._cocktail_out_buf) > 0:
+                    out = self._cocktail_out_buf.pop(0)
+                else:
+                    out = np.zeros_like(block)
+            return out
+        else:
+            return self._dfn_process_block(block)
+
+    @torch.no_grad()
+    def _dfn_process_block(self, block: np.ndarray) -> np.ndarray:
         """Process one block of mono float32 samples with a perfect mathematical crossfade."""
         t0 = time.perf_counter()
         
