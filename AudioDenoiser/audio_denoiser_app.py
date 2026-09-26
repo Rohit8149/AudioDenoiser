@@ -349,6 +349,19 @@ class AudioDenoiserApp:
         info_frm = ctk.CTkFrame(c, fg_color="transparent")
         info_frm.pack(fill="x", pady=(0, 10))
         
+        self.match_meter_frm = ctk.CTkFrame(c, fg_color="transparent")
+        self.match_meter_frm.pack(fill="x", pady=(0, 10))
+        
+        self.match_lbl = ctk.CTkLabel(self.match_meter_frm, text="Biometric Match:", font=ctk.CTkFont(size=11, weight="bold"))
+        self.match_lbl.pack(side="left", padx=(0, 10))
+        
+        self.match_bar = ctk.CTkProgressBar(self.match_meter_frm, width=200, height=12)
+        self.match_bar.pack(side="left")
+        self.match_bar.set(0)
+        
+        self.match_val_lbl = ctk.CTkLabel(self.match_meter_frm, text="0%", font=ctk.CTkFont(size=11), text_color=COLOR_DIM)
+        self.match_val_lbl.pack(side="left", padx=(10, 0))
+        
         profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
         has_profile = os.path.exists(profile_path)
         
@@ -1155,6 +1168,7 @@ class AudioDenoiserApp:
         try:
             self._update_stats()
             self._update_spectrograms()
+            self._update_biometrics()
             if self.mode == "denoise":
                 st = self.dn.stats
                 if st.blocks % 10 == 0:
@@ -1175,6 +1189,27 @@ class AudioDenoiserApp:
         except Exception as e:    # keep the UI alive no matter what
             log(f"UI tick error: {e!r}")
         self.root.after(UI_FPS_MS, self._tick)
+
+    def _update_biometrics(self):
+        # Update the Live Biometric Match Meter if Voice Isolation is active
+        if self.mode == "denoise" and self.dn is not None and getattr(self, "isolate_var", None) and self.isolate_var.get():
+            score = getattr(self.dn, "_latest_score", 0.0)
+            # Clip between 0 and 1
+            score = max(0.0, min(1.0, score))
+            self.match_bar.set(score)
+            pct = int(score * 100)
+            
+            # Color code based on threshold (0.28)
+            if score > 0.28:
+                self.match_bar.configure(progress_color="#00ff88") # Green/Match
+                self.match_val_lbl.configure(text=f"{pct}% (MATCH)", text_color="#00ff88")
+            else:
+                self.match_bar.configure(progress_color="#ff4444") # Red/Stranger
+                self.match_val_lbl.configure(text=f"{pct}% (MUTED)", text_color="#ff4444")
+        elif hasattr(self, "match_bar"):
+            self.match_bar.set(0)
+            self.match_val_lbl.configure(text="0%", text_color=COLOR_DIM)
+            self.match_bar.configure(progress_color=COLOR_ACCENT)
 
     def _update_stats(self):
         if self.mode != "denoise" or self.dn.stats.blocks == 0:
