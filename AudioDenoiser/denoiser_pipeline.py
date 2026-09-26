@@ -62,6 +62,7 @@ class StreamingDenoiser:
             log_level="ERROR",
             log_file=None,
         )
+        self.model = self.model.cpu()  # Prevent CUDA mismatch crash during live demo
         self.post_filter = post_filter
         self.p = ModelParams()
         self.nb_df = getattr(self.model, "nb_df", getattr(self.model, "df_bins", self.p.nb_df))
