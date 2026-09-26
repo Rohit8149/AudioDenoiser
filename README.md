@@ -1,87 +1,69 @@
-# 🎙️ AudioDenoiser: Real-Time AI Streaming Noise Suppression
+# AML Lab: Distributed AI Audio Denoiser
 
-**AudioDenoiser** is a Python-based, real-time AI audio processing application designed to hijack microphone input, apply deep-learning-based noise suppression, and route the clean audio to a Virtual Audio Cable for system-wide use (e.g., in Zoom, Teams, or OBS).
+A real-time, deep-learning audio denoiser and biometric voice isolation tool built for the AML Lab Presentation. This project features a **Triple-AI Pipeline** (DeepFilterNet3 + ECAPA-TDNN) and a **Global Admin Dashboard** (MQTT) allowing judges to remotely control the AI on multiple distributed laptops.
 
-This project adapts the highly optimized **DeepFilterNet3** architecture for native Python streaming, featuring a custom **Overlap-Add Crossfader** to achieve mathematically flawless, tear-free audio processing in real-time.
-
----
-
-## 🚀 Key Features
-
-*   **Real-Time AI Denoising:** Utilizes DeepFilterNet3 (PyTorch) to suppress background noise, keyboard clicks, and environmental sounds.
-*   **Zero-Tearing Overlap-Add Pipeline:** A custom mathematical crossfader that completely eliminates boundary discontinuities (the "kr kr" tearing effect) inherent in PyTorch convolutional streaming.
-*   **Custom Siren/Horn Killer:** A spectral median-filter post-processing step designed to catch and duck high-frequency, sudden transients (like traffic horns and sirens) that evade standard AI models.
-*   **System-Wide Audio Routing:** Seamlessly intercepts microphone audio and outputs it to a Virtual Audio Cable using PyAudio.
-*   **Interactive UI:** Built with `customtkinter`, featuring real-time waveform visualization, output gain control, and bypass toggles.
-*   **[UPCOMING] Target Speaker Extraction (Voice Printing):** A planned future feature that will allow the system to record a sample of the user's voice and *cancel out all other human voices* (solving the "cocktail party problem" and background TV/News broadcasts).
+## 🚀 Features
+- **Real-Time Denoising:** Suppresses background noise (Traffic, Classroom Babble, etc.) using DeepFilterNet3.
+- **Biometric Voice Isolation:** Uses Cosine Similarity embeddings to map and lock onto the speaker's unique vocal tract, filtering out unauthorized voices.
+- **Global Remote Control:** Connect multiple PCs across the world. An event-driven Admin Dashboard (HTML/JS) automatically discovers connecting PCs and allows remote control of the AI pipeline.
+- **Virtual Audio Cable Integration:** Directly routes the cleaned AI audio into Microsoft Teams or Zoom.
 
 ---
 
-## 🧠 For the Research Paper & PPT: Core Concepts & Knowledge Base
+## 🛠️ Installation Guide (For PC 2 & PC 3)
 
-If you are building a presentation or research paper on this project, here are the critical technical concepts you need to understand and mention:
+### 1. Prerequisites
+- **Python 3.10+** installed on your system.
+- An **NVIDIA GPU** (Recommended) or a fast modern CPU.
 
-### 1. The Core AI Architecture (DeepFilterNet3)
-*   **STFT (Short-Time Fourier Transform):** The audio is converted from waveforms into spectrograms (frequencies over time) before the AI processes it.
-*   **ERB (Equivalent Rectangular Bandwidth):** The AI maps frequencies to human hearing scales to process sound the way human ears perceive it.
-*   **GRU (Gated Recurrent Units) + Conv2d:** The neural network uses GRUs (for temporal memory/context) and 2D Convolutions (to find patterns in the spectrogram). 
+### 2. Download and Setup
+Open your terminal (PowerShell) and run these commands:
 
-### 2. The Streaming Challenge & The "Holy Grail" Fix (Highlight This!)
-*   **The Problem ("Convolutional Zero-Padding Artifacts"):** Standard PyTorch `Conv2d` layers are designed for offline files. When fed real-time 40ms audio blocks, PyTorch constantly zero-pads the boundaries. This causes a massive 25Hz discontinuity (a "kr kr" chainsaw tearing sound) because the AI loses context at the edge of every chunk.
-*   **The Solution (Overlap-Add Crossfading):** To achieve flawless real-time streaming in Python, we implemented a **120ms Overlap-Add Crossfader**. 
-    *   The system buffers 3 blocks (120ms) of audio.
-    *   It passes the entire 120ms to the AI so the neural network has full context.
-    *   It extracts the 40ms target block from the center.
-    *   It applies a **Hanning Window** crossfade to seamlessly blend the overlapping boundaries together. 
-    *   *Result:* 0% tearing, flawless neural network memory, and mathematically continuous audio.
+```powershell
+# 1. Clone the repository
+git clone https://github.com/Rohit8149/AudioDenoiser.git
+cd AudioDenoiser
 
-### 3. Audio Hijacking & Routing
-*   **PyAudio / PortAudio:** The library used to interface directly with Windows audio drivers (WASAPI/MME).
-*   **Virtual Audio Cable (VAC):** Software that acts as a digital patch cable. AudioDenoiser captures the physical microphone, cleans it, and plays it into the VAC input. Communication apps (Zoom, Discord) then read from the VAC output.
+# 2. Create a virtual environment
+python -m venv .venv
 
----
+# 3. Activate the virtual environment
+.\.venv\Scripts\activate
 
-## 🏗️ System Architecture
-
-```mermaid
-flowchart TD
-    Mic[Physical Microphone] -->|PyAudio Stream| Q_In[Input Queue]
-    Q_In --> Buffer[120ms Rolling Buffer]
-    
-    subgraph AI Pipeline (denoiser_pipeline.py)
-        Buffer --> STFT[Complex STFT]
-        STFT --> AI[DeepFilterNet3 PyTorch Model]
-        AI --> Mask[Spectral Masking]
-        Mask --> Siren[Siren & Horn Killer]
-        Siren --> ISTFT[Inverse STFT]
-        ISTFT --> Crossfade[Hanning Overlap-Add Crossfader]
-    end
-    
-    Crossfade --> Q_Out[Output Queue]
-    Q_Out -->|PyAudio Stream| VAC[Virtual Audio Cable Output]
-    VAC --> Zoom[Zoom / Teams / OBS]
+# 4. Install the required AI libraries (This will install PyTorch)
+pip install -r requirements.txt
 ```
 
----
-
-## 🔮 Future Work: Target Speaker Extraction
-While the current AI excels at removing non-human background noise, our next major architectural update will tackle the **Cocktail Party Problem** (e.g., background news broadcasts or people talking in the same room). 
-
-**How it will work:**
-1.  **Voice Enrollment:** The user records a 5-second sample of their clean voice.
-2.  **Speaker Embedding (d-vector):** A speaker verification model extracts the unique biometric "print" of the user's voice.
-3.  **Conditioned Masking:** The embedding vector is fed into the denoiser network alongside the audio, forcing the AI to treat *any voice that doesn't match the embedding* as noise.
+### 3. Install the Virtual Audio Cable (Required for Teams/Zoom)
+To route the clean audio into your video calls, you need the Virtual Audio Cable:
+1. Download it here: [VB-Audio Cable](https://vb-audio.com/Cable/)
+2. Extract the ZIP file.
+3. Right-click **`VBCABLE_Setup_x64.exe`** and select **Run as Administrator**.
+4. Click "Install Driver" and restart your PC.
 
 ---
 
-## 💻 Setup & Execution
+## 🎮 How to Run
 
-**Prerequisites:**
-1. Python 3.12+
-2. Virtual Audio Cable installed (e.g., VB-Cable).
-
-**Running the Application:**
-Simply execute the batch script which activates the virtual environment and launches the UI:
-```cmd
-run.bat
+### Starting the AI App
+Simply run the batch file provided:
+```powershell
+.\AudioDenoiser\run.bat
 ```
+1. Select your physical microphone as the **Microphone**.
+2. Select **CABLE Input** as the **Output**.
+3. Type a unique **Device ID** (e.g., `pc2`) and click **Connect to Cloud**.
+
+### Starting the Admin Dashboard
+To open the remote control panel:
+1. Open the `AudioDenoiser` folder in Windows File Explorer.
+2. Double-click the `admin_dashboard.html` file.
+3. It will open in Google Chrome and automatically discover all connected laptops!
+
+---
+
+## 📞 Connecting to Microsoft Teams / Zoom
+1. Open Teams or Zoom.
+2. Go to **Audio Settings**.
+3. Change your **Microphone** to **`CABLE Output (VB-Audio Virtual Cable)`**.
+4. Now, your colleagues will only hear perfectly cleaned, AI-processed audio!

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AML Lab - Admin Control Panel</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f1011; color: #cbd5e1; margin: 0; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { color: #f7f7f8; text-align: center; margin-bottom: 5px; }
+        p.subtitle { text-align: center; color: #757585; margin-bottom: 40px; }
+        .card { background-color: #1a1a2e; border: 1px solid #252540; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+        .status-bar { padding: 10px; border-radius: 8px; margin-bottom: 20px; text-align: center; font-weight: bold; }
+        .connected { background-color: rgba(0, 255, 136, 0.1); color: #00ff88; border: 1px solid #00ff88; }
+        .disconnected { background-color: rgba(255, 68, 68, 0.1); color: #ff4444; border: 1px solid #ff4444; }
+        
+        .device-row { display: flex; align-items: center; justify-content: space-between; padding: 15px 0; border-bottom: 1px solid #252540; }
+        .device-row:last-child { border-bottom: none; }
+        .device-info { display: flex; flex-direction: column; gap: 5px; }
+        .device-id { font-size: 12px; color: #757585; font-weight: bold;}
+        
+        .profile-select { background-color: #0f1011; color: #f7f7f8; border: 1px solid #252540; padding: 5px 10px; border-radius: 6px; font-size: 14px; font-weight: bold; outline: none; cursor: pointer; }
+        .profile-select:hover { border-color: #1f6aa5; }
+        
+        .controls { display: flex; gap: 10px; }
+        .btn { padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; transition: 0.2s; opacity: 0.5; color: white;}
+        .btn:hover { opacity: 0.8; }
+        
+        /* Active states */
+        .btn-on.active { background-color: #00ff88; color: #0f1011; opacity: 1; box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);}
+        .btn-off.active { background-color: #ff4444; color: white; opacity: 1; box-shadow: 0 0 10px rgba(255, 68, 68, 0.5);}
+        .btn-iso.active { background-color: #1f6aa5; color: white; opacity: 1; box-shadow: 0 0 10px rgba(31, 106, 165, 0.5);}
+        
+        /* Inactive states */
+        .btn-on { background-color: #00ff88; color: #0f1011; }
+        .btn-off { background-color: #ff4444; color: white; }
+        .btn-iso { background-color: #1f6aa5; color: white; }
+
+        .empty-state { text-align: center; color: #757585; padding: 20px; font-style: italic; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Admin Control Panel</h1>
+        <p class="subtitle">Remote AI Control for AML Distributed Demo</p>
+        
+        <div id="connection-status" class="status-bar disconnected">
+            Connecting to Global Cloud...
+        </div>
+
+        <div class="card">
+            <h3>Connected Devices (Live)</h3>
+            <div id="devices-container">
+                <div class="empty-state">Waiting for devices to connect...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const clientId = 'admin_board_' + Math.random().toString(16).substr(2, 8);
+        const host = 'wss://broker.hivemq.com:8884/mqtt';
+        
+        const options = {
+            keepalive: 60,
+            clientId: clientId,
+            protocolId: 'MQTT',
+            protocolVersion: 4,
+            clean: true,
+            reconnectPeriod: 1000,
+            connectTimeout: 30 * 1000,
+        };
+
+        const statusEl = document.getElementById('connection-status');
+        const container = document.getElementById('devices-container');
+        let activeDevices = {};
+        
+        const client = mqtt.connect(host, options);
+
+        client.on('connect', function () {
+            statusEl.textContent = '● Connected to Global Cloud (Ready)';
+            statusEl.className = 'status-bar connected';
+            client.subscribe('aml_lab_2026/audiodenoiser/state/+', { qos: 1 });
+        });
+
+        client.on('error', function (err) {
+            statusEl.textContent = '● Network Error';
+            statusEl.className = 'status-bar disconnected';
+        });
+
+        client.on('message', function (topic, message) {
+            try {
+                const payload = JSON.parse(message.toString());
+                const deviceId = payload.device_id;
+                const status = payload.status;
+                
+                if (status === "offline") {
+                    if (activeDevices[deviceId]) {
+                        delete activeDevices[deviceId];
+                        renderDevices();
+                    }
+                } else {
+                    activeDevices[deviceId] = {
+                        role: payload.role || "Custom",
+                        denoise_on: payload.denoise,
+                        isolate_on: payload.isolate
+                    };
+                    renderDevices();
+                }
+            } catch (e) {
+                console.error("Parse error:", e);
+            }
+        });
+
+        function renderDevices() {
+            container.innerHTML = ''; 
+            
+            const deviceIds = Object.keys(activeDevices);
+            if (deviceIds.length === 0) {
+                container.innerHTML = '<div class="empty-state">Waiting for devices to connect...</div>';
+                return;
+            }
+
+            deviceIds.forEach(id => {
+                const dev = activeDevices[id];
+                
+                const onClass = dev.denoise_on ? 'btn-on active' : 'btn-on';
+                const offClass = !dev.denoise_on ? 'btn-off active' : 'btn-off';
+                const isoClass = dev.isolate_on ? 'btn-iso active' : 'btn-iso';
+                
+                // Helper to render 'selected' attribute
+                const sel = (val) => dev.role === val ? 'selected' : '';
+                
+                const row = document.createElement('div');
+                row.className = 'device-row';
+                row.innerHTML = `
+                    <div class="device-info">
+                        <span class="device-id">DEVICE: ${id.toUpperCase()}</span>
+                        <select class="profile-select" onchange="sendCommand('${id}', 'profile', this.value)">
+                            <option value="Custom" ${sel('Custom')}>Custom Profile</option>
+                            <option value="Traffic (Max Suppression)" ${sel('Traffic (Max Suppression)')}>Traffic (Max Suppression)</option>
+                            <option value="Classroom (Babble Control)" ${sel('Classroom (Babble Control)')}>Classroom (Babble Control)</option>
+                            <option value="Home (Natural Mix)" ${sel('Home (Natural Mix)')}>Home (Natural Mix)</option>
+                        </select>
+                    </div>
+                    <div class="controls">
+                        <button class="btn ${onClass}" onclick="sendCommand('${id}', 'denoise', true)">Denoise ON</button>
+                        <button class="btn ${offClass}" onclick="sendCommand('${id}', 'denoise', false)">Denoise OFF</button>
+                        <button class="btn ${isoClass}" onclick="sendCommand('${id}', 'isolate', ${!dev.isolate_on})">Voice Isolate</button>
+                    </div>
+                `;
+                container.appendChild(row);
+            });
+        }
+
+        window.sendCommand = function(deviceId, action, state) {
+            if (!client.connected) {
+                alert("Cannot send command: Not connected to cloud.");
+                return;
+            }
+            const topic = `aml_lab_2026/audiodenoiser/command/${deviceId}`;
+            const payload = JSON.stringify({ action: action, state: state });
+            client.publish(topic, payload, { qos: 1 });
+        };
+    </script>
+</body>
+</html>

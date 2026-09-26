@@ -1,0 +1,30 @@
+=== HOW TO RUN THE PRESENTATION IN VS CODE ===
+
+We will use the professional "Split Terminal" method so you can see both running side-by-side without any annoying pop-up windows.
+
+STEP 1: START THE AI
+------------------------------------------------
+1. Open your VS Code Terminal (Ctrl + `).
+2. Copy and paste this exact command, then press Enter:
+   .\AudioDenoiser\run.bat
+
+
+STEP 2: SPLIT THE TERMINAL
+------------------------------------------------
+1. Look at the top right corner of the terminal window.
+2. Click the "Split Terminal" icon (it looks like a square split in half), or press Ctrl + Shift + 5.
+3. This creates a second terminal right next to the first one.
+
+
+STEP 3: START THE ADMIN DASHBOARD
+------------------------------------------------
+1. In the new right-side terminal, copy and paste this exact command, then press Enter:
+   .\run_admin_dashboard.bat
+
+
+STEP 4: OPEN THE WEBSITE
+------------------------------------------------
+Now that both are running, open your Google Chrome browser and go to this exact URL:
+http://127.0.0.1:8000/admin_dashboard.html
+
+(Or, simply double-click the admin_dashboard.html file in your folder!)

@@ -169,6 +169,7 @@ class AudioDenoiserApp:
         self._recording = False
         self._rec_raw = []   # list of raw mic blocks
         self._rec_ai = []    # list of AI-processed blocks
+        self.remote_controller = None
 
         # ── build UI, then load model ────────────────────────────────────
         self._build_ui()
@@ -306,11 +307,86 @@ class AudioDenoiserApp:
         scroll.pack(fill="both", expand=True)
         self._speed_up_scroll(scroll)
 
+        self._build_network_card(scroll)
         self._build_device_card(scroll)
         self._build_voice_card(scroll)
         self._build_controls_card(scroll, "live")
         self._build_stats_card(scroll)
         self._build_spectrograms_card(scroll)
+
+    def _build_network_card(self, parent):
+        c = self._card(parent, "Remote Control Network (MQTT)")
+        
+        net_frm = ctk.CTkFrame(c, fg_color="transparent")
+        net_frm.pack(fill="x")
+        
+        ctk.CTkLabel(net_frm, text="Device ID:", font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=(0,10))
+        
+        self.net_id_var = tk.StringVar(value="pc1")
+        self.net_id_entry = ctk.CTkEntry(net_frm, textvariable=self.net_id_var, width=120)
+        self.net_id_entry.pack(side="left", padx=(0,20))
+        
+        self.net_connect_btn = ctk.CTkButton(net_frm, text="Connect to Cloud", width=120, command=self._toggle_mqtt)
+        self.net_connect_btn.pack(side="left")
+        
+        self.net_status_lbl = ctk.CTkLabel(net_frm, text="Disconnected", font=ctk.CTkFont(size=11), text_color=COLOR_DIM)
+        self.net_status_lbl.pack(side="left", padx=(20,0))
+        
+        self.admin_override_lbl = ctk.CTkLabel(c, text="", font=ctk.CTkFont(size=12, weight="bold"), text_color="#00ff88")
+        self.admin_override_lbl.pack(anchor="w", pady=(5,0))
+
+    def _toggle_mqtt(self):
+        if self.remote_controller is None:
+            # Connect
+            dev_id = self.net_id_var.get().strip()
+            if not dev_id:
+                return
+            from remote_controller import RemoteController
+            self.remote_controller = RemoteController(dev_id, self._on_mqtt_command, self._on_mqtt_status)
+            self.remote_controller.start()
+            self._broadcast_state()
+            self.net_connect_btn.configure(text="Disconnect", fg_color=COLOR_OFF, hover_color=COLOR_OFF_HOVER)
+        else:
+            # Disconnect
+            self.remote_controller.stop()
+            self.remote_controller = None
+            self.net_connect_btn.configure(text="Connect to Cloud", fg_color=COLOR_ACCENT, hover_color=COLOR_ON_HOVER)
+            self.net_status_lbl.configure(text="Disconnected", text_color=COLOR_DIM)
+            self.admin_override_lbl.configure(text="")
+
+    def _broadcast_state(self):
+        if getattr(self, "remote_controller", None) is not None:
+            self.remote_controller.publish_state(
+                role=self.profile_var.get(),
+                denoise_on=(self.mode == "denoise"),
+                isolate_on=self.isolate_var.get()
+            )
+
+    def _on_mqtt_command(self, action, state):
+        self.root.after(0, lambda: self._handle_admin_override(action, state))
+
+    def _on_mqtt_status(self, status_msg, is_error):
+        color = COLOR_OFF if is_error else COLOR_ON
+        self.root.after(0, lambda: self.net_status_lbl.configure(text=status_msg, text_color=color))
+
+    def _handle_admin_override(self, action, state):
+        self.admin_override_lbl.configure(text=f"Controlled by Admin: {action.upper()} -> {state}")
+        
+        if action == "denoise":
+            current = (self.mode == "denoise")
+            if current != state:
+                self._toggle_main()
+        elif action == "isolate":
+            current = self.isolate_var.get()
+            if current != state:
+                self.isolate_var.set(state)
+                self._toggle_isolate()
+        elif action == "profile":
+            current = self.profile_var.get()
+            if current != state and hasattr(self, "profile_var"):
+                self.profile_var.set(state)
+                self._on_profile_change(state)
+
 
     def _build_device_card(self, parent):
         c = self._card(parent, "🎙️  Device Settings")
@@ -401,6 +477,8 @@ class AudioDenoiserApp:
             self.dn.isolate_speaker = self.isolate_var.get()
             if self.isolate_var.get():
                 self.dn.reload_profile()
+        self._broadcast_state()
+
 
     def _play_voice(self):
         profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
@@ -731,6 +809,7 @@ class AudioDenoiserApp:
 
     def _on_profile_change(self, choice: str):
         if choice == "Custom":
+            self._broadcast_state()
             return
         
         # Define the presets: (atten, mix, gain, hpf, floor, post_filter)
@@ -766,12 +845,15 @@ class AudioDenoiserApp:
             self._on_pf()
             
             self._suppress_custom = False
+            self._broadcast_state()
+
 
     def _on_param(self, tab, name, raw):
         """Slider moved: store value, update label, apply to pipeline."""
         if tab == "live" and not getattr(self, "_suppress_custom", False):
             if hasattr(self, "profile_var") and self.profile_var.get() != "Custom":
                 self.profile_var.set("Custom")
+                self._broadcast_state()
                 
         if name == "atten":
             v = int(round(float(raw)))
@@ -912,6 +994,7 @@ class AudioDenoiserApp:
             # If Repeat is ON, we fall back to raw bypass mode so they can hear the original.
             if self.repeat:
                 self._start_engine(denoise=False)
+        self._broadcast_state()
 
     def _toggle_repeat(self):
         self.repeat = not self.repeat
