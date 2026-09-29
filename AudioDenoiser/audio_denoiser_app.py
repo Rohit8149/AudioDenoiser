@@ -228,6 +228,11 @@ class AudioDenoiserApp:
             corner_radius=8, command=self._toggle_repeat)
         self.repeat_btn.pack(side="left", padx=(0, 16))
 
+        self.tip_lbl = ctk.CTkLabel(
+            mid, text="", font=ctk.CTkFont(size=11),
+            text_color=COLOR_DIM, wraplength=400, anchor="w", justify="left")
+        self.tip_lbl.pack(side="left", fill="x", expand=True)
+
     # ── helpers ──────────────────────────────────────────────────────────
 
     def _card(self, parent, title: str):
