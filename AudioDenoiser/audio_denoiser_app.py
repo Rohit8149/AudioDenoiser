@@ -1074,17 +1074,20 @@ class AudioDenoiserApp:
         var, lbl, fmt = getattr(self, f"fx_lbls_{tab}")[name]
         if name == "mix":
             v = int(round(float(raw)))
+            self.params[tab][name] = v
             lbl.configure(text=fmt(v))
             if self.mode == "denoise":
                 self.dn.set_mix(v / 100.0)
         elif name == "gain":
             v = round(float(raw))
+            self.params[tab][name] = v
             lbl.configure(text=fmt(v))
             if self.mode == "denoise":
                 self.dn.set_output_gain(v)
             self._broadcast_state()
         elif name == "hpf":
             v = round(float(raw) / 20) * 20
+            self.params[tab][name] = v
             lbl.configure(text=fmt(v))
             if self.mode == "denoise":
                 self.dn.set_highpass(v)
