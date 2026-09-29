@@ -253,7 +253,7 @@ class AudioDenoiserApp:
         top_fr.pack(fill="x")
         top_fr.pack_propagate(False)
 
-        self.onoff_btn = ctk.CTkButton(top_fr, text="SYSTEM MASTER", width=140, height=36,
+        self.onoff_btn = ctk.CTkButton(top_fr, text="SYSTEM MASTER", width=180, height=36,
                                        font=ctk.CTkFont(size=12, weight="bold"),
                                        fg_color=CRIMSON, hover_color=CRIMSON, corner_radius=18,
                                        command=self._toggle_main)
@@ -1137,30 +1137,6 @@ class AudioDenoiserApp:
                 
         self._update_buttons()
 
-    def _update_buttons(self):
-        denoise_on = self.mode == "denoise"
-        self.onoff_btn.configure(
-            text="●  ON" if denoise_on else "●  OFF",
-            fg_color=COLOR_ON if denoise_on else COLOR_OFF,
-            hover_color=COLOR_ON_HOVER if denoise_on else COLOR_OFF_HOVER)
-            
-        if self.repeat:
-            self.repeat_btn.configure(
-                text="🔊  Repeat: ON",
-                fg_color=COLOR_ON,
-                hover_color=COLOR_ON_HOVER)
-        else:
-            self.repeat_btn.configure(
-                text="🔇  Repeat: OFF",
-                fg_color=COLOR_OFF, hover_color=COLOR_OFF_HOVER)
-                
-        # Update tip label to explain bypass mode
-        if self.mode == "bypass":
-            self.tip_lbl.configure(text="ℹ  Bypass Mode: Playing raw original microphone audio.", text_color="yellow")
-        elif self.mode == "denoise":
-            self.tip_lbl.configure(text="⚡  Denoising Active", text_color=COLOR_ON)
-        else:
-            self.tip_lbl.configure(text="")
 
     def _start_engine(self, denoise: bool = True):
         self._ensure_denoiser()
