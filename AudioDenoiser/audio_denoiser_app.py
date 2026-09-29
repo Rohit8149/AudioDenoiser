@@ -254,13 +254,13 @@ class AudioDenoiserApp:
         top_fr.pack(fill="x")
         top_fr.pack_propagate(False)
 
-        self.onoff_btn = ctk.CTkButton(top_fr, text="MASTER AI SWITCH", width=180, height=36,
+        self.onoff_btn = ctk.CTkButton(top_fr, text="DENOISER", width=180, height=36,
                                        font=ctk.CTkFont(size=12, weight="bold"),
                                        fg_color=CRIMSON, hover_color=CRIMSON, corner_radius=18,
                                        command=self._toggle_main)
         self.onoff_btn.pack(side="left", padx=15, pady=12)
 
-        self.repeat_btn = ctk.CTkButton(top_fr, text="LOOPBACK MONITOR", width=130, height=28,
+        self.repeat_btn = ctk.CTkButton(top_fr, text="PLAYBACK", width=130, height=28,
                                         font=ctk.CTkFont(size=10, weight="bold"),
                                         fg_color=PANEL_BORDER, hover_color=TEXT_DIM,
                                         command=self._toggle_repeat)
@@ -403,7 +403,7 @@ class AudioDenoiserApp:
         self.play_voice_btn.pack(pady=(5,20))
 
         ctk.CTkLabel(c, text="NEURAL EXTRACTION MODE", font=ctk.CTkFont(size=10, weight="bold"), text_color=TEXT_MUTED).pack(anchor="w", pady=(0,10))
-        self.mode_seg = ctk.CTkSegmentedButton(c, values=["BYPASS", "ZERO-LAT GATE", "DEEP EXTRACT"],
+        self.mode_seg = ctk.CTkSegmentedButton(c, values=["BYPASS", "VOICE GATE", "VOICE FILTER"],
                                                font=ctk.CTkFont(size=9, weight="bold"), command=self._on_mode_change,
                                                selected_color=CYAN, selected_hover_color=CYAN, unselected_color=BG)
         self.mode_seg.pack(fill="x")
@@ -479,7 +479,7 @@ class AudioDenoiserApp:
             if self.live_cocktail_var.get():
                 self.live_cocktail_var.set(False)
                 self._toggle_cocktail()
-        elif value == 'ZERO-LAT GATE':
+        elif value == 'VOICE GATE':
             self.mode_desc.configure(text="Fast biometric gating. Low latency.")
             if self.live_cocktail_var.get():
                 self.live_cocktail_var.set(False)
@@ -487,7 +487,7 @@ class AudioDenoiserApp:
             if not self.isolate_var.get():
                 self.isolate_var.set(True)
                 self._toggle_isolate()
-        elif value == 'DEEP EXTRACT':
+        elif value == 'VOICE FILTER':
             self.mode_desc.configure(text="Deep neural separation. 3s delay.")
             if self.isolate_var.get():
                 self.isolate_var.set(False)
@@ -570,7 +570,7 @@ class AudioDenoiserApp:
     def _update_buttons(self):
         denoise_on = self.mode == "denoise"
         self.onoff_btn.configure(
-            text="MASTER AI SWITCH (ON)" if denoise_on else "MASTER AI SWITCH",
+            text="DENOISER (ON)" if denoise_on else "DENOISER",
             fg_color=GREEN if denoise_on else CRIMSON,
             hover_color=GREEN if denoise_on else CRIMSON)
             
@@ -640,7 +640,7 @@ class AudioDenoiserApp:
                 self.isolate_var.set(state)
                 self._toggle_isolate()
                 if state:
-                    self.mode_seg.set("ZERO-LAT GATE")
+                    self.mode_seg.set("VOICE GATE")
                     self.mode_desc.configure(text="Blocks background noise instantly.", text_color=TEXT_PRIMARY)
                 elif not self.live_cocktail_var.get():
                     self.mode_seg.set("BYPASS")
@@ -651,7 +651,7 @@ class AudioDenoiserApp:
                 self.live_cocktail_var.set(state)
                 self._toggle_cocktail()
                 if state:
-                    self.mode_seg.set("DEEP EXTRACT")
+                    self.mode_seg.set("VOICE FILTER")
                     self.mode_desc.configure(text="High-quality extraction (adds latency).", text_color=TEXT_PRIMARY)
                 elif not self.isolate_var.get():
                     self.mode_seg.set("BYPASS")
