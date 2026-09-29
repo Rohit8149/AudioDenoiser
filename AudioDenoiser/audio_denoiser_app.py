@@ -163,12 +163,7 @@ class AudioDenoiserApp:
         self.overruns = 0
         self.block_ms = 100
         self.start_time = None
-        self._file_busy = False
-        self.out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
         # Recording state: captures raw mic + AI output simultaneously
-        self._recording = False
-        self._rec_raw = []   # list of raw mic blocks
-        self._rec_ai = []    # list of AI-processed blocks
         self.remote_controller = None
 
         # ── build UI, then load model ────────────────────────────────────
@@ -232,22 +227,6 @@ class AudioDenoiserApp:
             fg_color=COLOR_ON, hover_color=COLOR_ON_HOVER,
             corner_radius=8, command=self._toggle_repeat)
         self.repeat_btn.pack(side="left", padx=(0, 16))
-
-        self.rec_btn = ctk.CTkButton(
-            mid, text="🔴 Record", width=110, height=32,
-            fg_color="gray25", hover_color="gray35",
-            command=self._toggle_record)
-        self.rec_btn.pack(side="left", padx=(0, 16))
-
-        self.tip_lbl = ctk.CTkLabel(
-            mid, text="", font=ctk.CTkFont(size=11),
-            text_color=COLOR_DIM, wraplength=280, anchor="w", justify="left")
-        self.tip_lbl.pack(side="left")
-
-        # Right side: Exit
-        ctk.CTkButton(hdr, text="✕  Exit", width=90, height=32,
-                      fg_color="gray25", hover_color="gray35",
-                      command=self._exit).pack(side="right", pady=6)
 
     # ── helpers ──────────────────────────────────────────────────────────
 
@@ -711,65 +690,6 @@ class AudioDenoiserApp:
 
     # ── Files tab ────────────────────────────────────────────────────────
 
-    def _build_files_tab(self):
-        tab = self.tabview.tab("  📁 Files  ")
-        scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
-        scroll.pack(fill="both", expand=True)
-        self._speed_up_scroll(scroll)
-
-        self._build_controls_card(scroll, "file")
-
-        c = self._card(scroll, "📂  Denoise Audio Files")
-
-        # ── file list + buttons ──────────────────────────────────────
-        body = ctk.CTkFrame(c, fg_color="transparent")
-        body.pack(fill="x")
-        body.columnconfigure(0, weight=1)
-
-        # Dark-styled Listbox (no CTk equivalent)
-        self.file_list = tk.Listbox(
-            body, height=8, selectmode="extended",
-            bg="#1a1a2e", fg="#cbd5e1", selectbackground="#1f6aa5",
-            selectforeground="white", borderwidth=0,
-            highlightthickness=1, highlightcolor="#334155",
-            highlightbackground="#252540",
-            font=("Segoe UI", 10), activestyle="none")
-        self.file_list.grid(row=0, column=0, rowspan=5, sticky="nsew",
-                            padx=(0, 12), pady=2)
-
-        btns = [
-            ("📄  Add Files…",       self._add_files,    0, False),
-            ("✕   Remove Selected",  self._remove_files, 1, False),
-            ("🗑️  Clear All",        self._clear_files,  2, False),
-        ]
-        for text, cmd, row, accent in btns:
-            ctk.CTkButton(body, text=text, command=cmd, width=160, height=34,
-                          fg_color="gray25", hover_color="gray35",
-                          font=ctk.CTkFont(size=11), corner_radius=8
-                          ).grid(row=row, column=1, pady=2, sticky="ew")
-
-        # denoise button (accent)
-        self.denoise_btn = ctk.CTkButton(
-            body, text="▶  Denoise Files", command=self._denoise_files,
-            width=160, height=40, corner_radius=8,
-            font=ctk.CTkFont(size=13, weight="bold"))
-        self.denoise_btn.grid(row=3, column=1, pady=(12, 2), sticky="ew")
-
-        ctk.CTkButton(body, text="📂  Open Output Folder",
-                      command=self._open_out_dir, width=160, height=34,
-                      fg_color="gray25", hover_color="gray35",
-                      font=ctk.CTkFont(size=11), corner_radius=8
-                      ).grid(row=4, column=1, pady=2, sticky="ew")
-
-        # ── status label ─────────────────────────────────────────────
-        self.file_status = ctk.CTkLabel(
-            c,
-            text="Supported: wav, mp3, flac, ogg, m4a, aac, wma\n"
-                 "Output: 48 kHz mono WAV → AudioDenoiser\\output\\<name>_denoised.wav",
-            font=ctk.CTkFont(size=11), text_color=COLOR_DIM,
-            justify="left", anchor="w", wraplength=600)
-        self.file_status.pack(fill="x", pady=(8, 0))
-
     # ═════════════════════════════════════════════════════════════════════
     #  DEVICE MANAGEMENT
     # ═════════════════════════════════════════════════════════════════════
@@ -912,49 +832,6 @@ class AudioDenoiserApp:
         if hasattr(self, "dn") and self.dn is not None:
             self.dn.set_siren_filter(enabled)
             log(f"Siren Killer set to {enabled}")
-
-    def _toggle_record(self):
-        """Toggle recording of raw mic + AI output to WAV files."""
-        if not self._recording:
-            # START recording
-            if not self.running:
-                self.tip_lbl.configure(
-                    text="⚠  Turn ON the denoiser first, then hit Record.",
-                    text_color=COLOR_OFF)
-                return
-            self._rec_raw.clear()
-            self._rec_ai.clear()
-            self._recording = True
-            self.rec_btn.configure(text="⏹ Stop Rec", fg_color="#B22222")
-            self.tip_lbl.configure(text="🔴  Recording... speak now, then click Stop Rec.",
-                                   text_color="#FF4444")
-            log("Recording started")
-        else:
-            # STOP recording and save files
-            self._recording = False
-            self.rec_btn.configure(text="🔴 Record", fg_color="gray25")
-            if not self._rec_raw:
-                self.tip_lbl.configure(text="⚠  Nothing was recorded.",
-                                       text_color=COLOR_OFF)
-                return
-            import soundfile as sf_lib
-            os.makedirs(self.out_dir, exist_ok=True)
-            raw = np.concatenate(self._rec_raw)
-            ai = np.concatenate(self._rec_ai)
-            # Align lengths (crossfade may cause slight difference)
-            n = min(len(raw), len(ai))
-            raw, ai = raw[:n], ai[:n]
-            raw_path = os.path.join(self.out_dir, "recorded_raw.wav")
-            ai_path = os.path.join(self.out_dir, "recorded_ai.wav")
-            sf_lib.write(raw_path, raw, self.dn.sr)
-            sf_lib.write(ai_path, ai, self.dn.sr)
-            dur = n / self.dn.sr
-            self.tip_lbl.configure(
-                text=f"✓  Saved {dur:.1f}s → recorded_raw.wav + recorded_ai.wav in output/",
-                text_color=COLOR_ON)
-            log(f"Recording saved: {dur:.1f}s  raw={raw_path}  ai={ai_path}")
-            self._rec_raw.clear()
-            self._rec_ai.clear()
 
     def _ensure_denoiser(self):
         """Rebuild the denoiser if the post-filter option changed."""
@@ -1139,12 +1016,6 @@ class AudioDenoiserApp:
                 self.running = False
                 self.root.after(0, self._on_worker_crash)
                 return
-
-            # Capture both raw and AI output when recording
-            if self._recording:
-                self._rec_raw.append(blk.copy())
-                self._rec_ai.append(out.copy())
-                
             if self.repeat:
                 with self.jb_lock:
                     self.jb.append(out)
@@ -1159,88 +1030,6 @@ class AudioDenoiserApp:
     # ═════════════════════════════════════════════════════════════════════
     #  FILE MODE
     # ═════════════════════════════════════════════════════════════════════
-
-    def _add_files(self):
-        from tkinter import filedialog
-        paths = filedialog.askopenfilenames(
-            title="Choose audio files to denoise",
-            filetypes=[
-                ("Audio files", "*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma"),
-                ("All files", "*.*")])
-        existing = set(self.file_list.get(0, "end"))
-        for p in paths:
-            if p not in existing:
-                self.file_list.insert("end", p)
-
-    def _remove_files(self):
-        for idx in sorted(self.file_list.curselection(), reverse=True):
-            self.file_list.delete(idx)
-
-    def _clear_files(self):
-        self.file_list.delete(0, "end")
-
-    def _open_out_dir(self):
-        os.makedirs(self.out_dir, exist_ok=True)
-        os.startfile(self.out_dir)
-
-    def _denoise_files(self):
-        if self._file_busy:
-            return
-        if self.mode is not None:
-            self.file_status.configure(
-                text="⚠  Turn the live denoiser OFF before processing files.",
-                text_color=COLOR_OFF)
-            return
-        files = list(self.file_list.get(0, "end"))
-        if not files:
-            self.file_status.configure(text="⚠  Add some files first.",
-                                       text_color=COLOR_OFF)
-            return
-        self._ensure_denoiser()
-        self._file_busy = True
-        self.denoise_btn.configure(state="disabled")
-        self.onoff_btn.configure(state="disabled")     # prevent live during file
-        os.makedirs(self.out_dir, exist_ok=True)
-
-        def worker():
-            results = []
-            for i, src in enumerate(files):
-                self._file_progress = (
-                    f"Processing {i + 1}/{len(files)}: {os.path.basename(src)}")
-                try:
-                    stem = os.path.splitext(os.path.basename(src))[0]
-                    dst = os.path.join(self.out_dir, f"{stem}_denoised.wav")
-                    self._apply_params("file")
-                    r = self.dn.denoise_file(src, dst)
-                    results.append(("ok", r))
-                except Exception as e:
-                    log(f"file denoise failed for {src}: {e!r}")
-                    results.append(("fail", (src, str(e))))
-            self._file_results = results
-            self._file_done = True
-
-        self._file_progress = "Starting…"
-        self._file_done = False
-        threading.Thread(target=worker, daemon=True).start()
-        self.root.after(200, self._poll_file_worker)
-
-    def _poll_file_worker(self):
-        self.file_status.configure(text=f"⏳  {self._file_progress}",
-                                   text_color=COLOR_ACCENT)
-        if not self._file_done:
-            self.root.after(200, self._poll_file_worker)
-            return
-        self._file_busy = False
-        self.denoise_btn.configure(state="normal")
-        self.onoff_btn.configure(state="normal")       # re-enable live button
-        ok = [r for s, r in self._file_results if s == "ok"]
-        fail = [r for s, r in self._file_results if s == "fail"]
-        msg = f"✓  Done: {len(ok)} file(s) denoised → {self.out_dir}"
-        if fail:
-            msg += f"  ({len(fail)} failed — see audiodenoiser.log)"
-        self.file_status.configure(
-            text=msg, text_color=COLOR_OFF if fail else COLOR_ON)
-        log(msg)
 
     # ═════════════════════════════════════════════════════════════════════
     #  TICK / UPDATES
