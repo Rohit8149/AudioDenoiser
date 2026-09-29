@@ -1102,6 +1102,8 @@ class AudioDenoiserApp:
         self.dn.set_output_gain(p["gain"])
         self.dn.set_highpass(p["hpf"])
         self.dn.set_mask_floor(p["floor"])
+        if hasattr(self, "threshold_var"):
+            self.dn.biometric_threshold = float(self.threshold_var.get())
         if hasattr(self, "isolate_var"):
             self.dn.isolate_speaker = self.isolate_var.get()
 
