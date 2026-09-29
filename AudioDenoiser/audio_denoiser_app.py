@@ -667,14 +667,14 @@ class AudioDenoiserApp:
             if match:
                 self._prev_out_dev = self.out_dev.get()
                 self.out_dev.set(match[0])
-                self.tip_lbl.configure(text="≡ƒô₧ Teams Mode ON: AI audio is now routed to Virtual Cable.", text_color=COLOR_ON)
+                self.tip_lbl.configure(text="Teams Mode ON: AI audio is now routed to Virtual Cable.", text_color=COLOR_ON)
             else:
                 self.teams_var.set(False)
-                self.tip_lbl.configure(text="ΓÜá∩╕Å VB-Audio Virtual Cable not found! Please install it.", text_color="red")
+                self.tip_lbl.configure(text="VB-Audio Virtual Cable not found! Please install it.", text_color="red")
         else:
             if hasattr(self, "_prev_out_dev"):
                 self.out_dev.set(self._prev_out_dev)
-            self.tip_lbl.configure(text="≡ƒô₧ Teams Mode OFF: Audio routed back to normal speakers.", text_color=COLOR_ON)
+            self.tip_lbl.configure(text="Teams Mode OFF: Audio routed back to normal speakers.", text_color=COLOR_ON)
             
         if self.running:
             self._stop_all()
@@ -692,14 +692,14 @@ class AudioDenoiserApp:
                     self.threshold_var.set(0.15)
                     self._on_thresh_change(0.15)
                 self.live_cocktail_switch.configure(text="Loading Cocktail AI...", state="disabled")
-                self.tip_lbl.configure(text="ΓÅ│ Loading massive SepFormer AI into memory (takes a few secs)...", text_color="yellow")
+                self.tip_lbl.configure(text="Loading massive SepFormer AI into memory (takes a few secs)...", text_color="yellow")
                 self.root.update_idletasks()
                 
                 def load_task():
                     try:
                         self.dn.set_cocktail_mode(True)
                         self.root.after(0, lambda: self.live_cocktail_switch.configure(text="Cocktail Party Separation (3s Delay)", state="normal"))
-                        self.root.after(0, lambda: self.tip_lbl.configure(text="Γ£à Cocktail AI Active! (Expect 3s audio delay)", text_color=COLOR_ON))
+                        self.root.after(0, lambda: self.tip_lbl.configure(text="Cocktail AI Active! (Expect 3s audio delay)", text_color=COLOR_ON))
                     except Exception as e:
                         log(f"Failed to load cocktail mode: {e!r}")
                         self.root.after(0, lambda: self.live_cocktail_var.set(False))
@@ -719,11 +719,11 @@ class AudioDenoiserApp:
         try:
             dev_out = int(self.out_dev.get().split(":")[0])
         except (ValueError, IndexError):
-            self.enroll_prompt.configure(text="ΓÜá∩╕Å Please select an output device first!")
+            self.enroll_prompt.configure(text="Please select an output device first!")
             return
             
         self.play_voice_btn.configure(state="disabled")
-        self.enroll_prompt.configure(text="Γû╢∩╕Å Playing your saved Voice Print...", text_color=COLOR_ON)
+        self.enroll_prompt.configure(text="Playing your saved Voice Print...", text_color=COLOR_ON)
         
         def play_task():
             try:
@@ -731,9 +731,9 @@ class AudioDenoiserApp:
                 data, fs = sf.read(profile_path)
                 sd.play(data, fs, device=dev_out)
                 sd.wait()
-                self.enroll_prompt.configure(text="Γ£à Finished playing back your Voice Print.", text_color=COLOR_DIM)
+                self.enroll_prompt.configure(text="Finished playing back your Voice Print.", text_color=COLOR_DIM)
             except Exception as e:
-                self.enroll_prompt.configure(text=f"Γ¥î Error playing: {e}", text_color=COLOR_OFF)
+                self.enroll_prompt.configure(text=f"Error playing: {e}", text_color=COLOR_OFF)
             finally:
                 self.play_voice_btn.configure(state="normal")
                 
@@ -743,12 +743,12 @@ class AudioDenoiserApp:
         try:
             dev_in = int(self.in_dev.get().split(":")[0])
         except (ValueError, IndexError):
-            self.enroll_prompt.configure(text="Γ¥î Please select a microphone first!")
+            self.enroll_prompt.configure(text="Please select a microphone first!")
             return
 
         self.enroll_btn.configure(state="disabled")
         self.play_voice_btn.configure(state="disabled")
-        self.enroll_prompt.configure(text="≡ƒö┤ RECORDING (20s)...", text_color="orange")
+        self.enroll_prompt.configure(text="RECORDING (20s)...", text_color="orange")
         
         abort_flag = [False]
         
@@ -760,8 +760,8 @@ class AudioDenoiserApp:
             import sounddevice as sd
             sd.stop()
             prompt_win.destroy()
-            self.enroll_prompt.configure(text="Γ¥î Enrollment aborted by user.", text_color="#FF4444")
-            self.enroll_btn.configure(state="normal", text="≡ƒöä Re-enroll Voice")
+            self.enroll_prompt.configure(text="Enrollment aborted by user.", text_color="#FF4444")
+            self.enroll_btn.configure(state="normal", text="Re-enroll Voice")
             if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")):
                 self.play_voice_btn.configure(state="normal")
                 self.isolate_switch.configure(state="normal")
@@ -772,7 +772,7 @@ class AudioDenoiserApp:
         prompt_win.attributes("-topmost", True)
         prompt_win.geometry(f"+{self.root.winfo_x() + 100}+{self.root.winfo_y() + 50}")
         
-        lbl_title = ctk.CTkLabel(prompt_win, text="≡ƒö┤ RECORDING IN PROGRESS", text_color="#FF4444", font=ctk.CTkFont(size=20, weight="bold"))
+        lbl_title = ctk.CTkLabel(prompt_win, text="RECORDING IN PROGRESS", text_color="#FF4444", font=ctk.CTkFont(size=20, weight="bold"))
         lbl_title.pack(pady=(20, 10))
         
         script_text = (
@@ -815,7 +815,7 @@ class AudioDenoiserApp:
                 # Save the raw noisy mic recording
                 sf.write(temp_path, audio, 48000)
                 
-                self.enroll_prompt.configure(text="≡ƒº╣ Purifying voice print using DeepFilterNet...", text_color="yellow")
+                self.enroll_prompt.configure(text="Purifying voice print using DeepFilterNet...", text_color="yellow")
                 if prompt_win.winfo_exists():
                     prompt_win.destroy()
                 
@@ -849,10 +849,10 @@ class AudioDenoiserApp:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
                 
-                self.enroll_prompt.configure(text="Γ£à Voice Print saved! The AI will now use this to filter out other voices.", text_color=COLOR_ON)
-                self.enroll_btn.configure(text="≡ƒöä Re-enroll Voice")
+                self.enroll_prompt.configure(text="Voice Print saved! The AI will now use this to filter out other voices.", text_color=COLOR_ON)
+                self.enroll_btn.configure(text="Re-enroll Voice")
             except Exception as e:
-                self.enroll_prompt.configure(text=f"Γ¥î Error recording: {e}", text_color=COLOR_OFF)
+                self.enroll_prompt.configure(text=f"Error recording: {e}", text_color=COLOR_OFF)
             finally:
                 self.enroll_btn.configure(state="normal")
                 if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")):
