@@ -164,6 +164,9 @@ class AudioDenoiserApp:
         self.block_ms = 100
         self.start_time = None
         # Recording state: captures raw mic + AI output simultaneously
+        self._recording = False
+        self._rec_raw = []
+        self._rec_ai = []
         self.remote_controller = None
 
         # ── build UI, then load model ────────────────────────────────────
@@ -227,6 +230,12 @@ class AudioDenoiserApp:
             fg_color=COLOR_ON, hover_color=COLOR_ON_HOVER,
             corner_radius=8, command=self._toggle_repeat)
         self.repeat_btn.pack(side="left", padx=(0, 16))
+
+        self.rec_btn = ctk.CTkButton(
+            mid, text="🔴 Record", width=110, height=32,
+            fg_color="gray25", hover_color="gray35",
+            command=self._toggle_record)
+        self.rec_btn.pack(side="left", padx=(0, 16))
 
         self.tip_lbl = ctk.CTkLabel(
             mid, text="", font=ctk.CTkFont(size=11),
@@ -1025,6 +1034,49 @@ class AudioDenoiserApp:
             self.dn.set_siren_filter(enabled)
             log(f"Siren Killer set to {enabled}")
 
+    def _toggle_record(self):
+        """Toggle recording of raw mic + AI output to WAV files."""
+        if not getattr(self, '_recording', False):
+            # START recording
+            if not self.running:
+                self.tip_lbl.configure(
+                    text="⚠  Turn ON the denoiser first, then hit Record.",
+                    text_color=COLOR_OFF)
+                return
+            self._rec_raw.clear()
+            self._rec_ai.clear()
+            self._recording = True
+            self.rec_btn.configure(text="⏹ Stop Rec", fg_color="#B22222")
+            self.tip_lbl.configure(text="🔴  Recording... speak now, then click Stop Rec.",
+                                   text_color="#FF4444")
+            log("Recording started")
+        else:
+            # STOP recording and save files
+            self._recording = False
+            self.rec_btn.configure(text="🔴 Record", fg_color="gray25")
+            if not self._rec_raw:
+                self.tip_lbl.configure(text="⚠  Nothing was recorded.",
+                                       text_color=COLOR_OFF)
+                return
+            import soundfile as sf_lib
+            os.makedirs(self.out_dir, exist_ok=True)
+            raw = np.concatenate(self._rec_raw)
+            ai = np.concatenate(self._rec_ai)
+            # Align lengths (crossfade may cause slight difference)
+            n = min(len(raw), len(ai))
+            raw, ai = raw[:n], ai[:n]
+            raw_path = os.path.join(self.out_dir, "recorded_raw.wav")
+            ai_path = os.path.join(self.out_dir, "recorded_ai.wav")
+            sf_lib.write(raw_path, raw, self.dn.sr)
+            sf_lib.write(ai_path, ai, self.dn.sr)
+            dur = n / self.dn.sr
+            self.tip_lbl.configure(
+                text=f"✓  Saved {dur:.1f}s → recorded_raw.wav + recorded_ai.wav in output/",
+                text_color=COLOR_ON)
+            log(f"Recording saved: {dur:.1f}s  raw={raw_path}  ai={ai_path}")
+            self._rec_raw.clear()
+            self._rec_ai.clear()
+
     def _ensure_denoiser(self):
         """Rebuild the denoiser if the post-filter option changed."""
         pf = bool(self.pf_var.get())
@@ -1218,6 +1270,9 @@ class AudioDenoiserApp:
             if self.repeat:
                 with self.jb_lock:
                     self.jb.append(out)
+            if getattr(self, "_recording", False):
+                self._rec_raw.append(blk)
+                self._rec_ai.append(out)
 
     def _on_worker_crash(self):
         """Called on the main thread when the audio worker thread dies."""
