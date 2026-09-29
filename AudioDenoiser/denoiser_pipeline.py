@@ -92,6 +92,7 @@ class StreamingDenoiser:
         # Initialize SpeakerVerifier in background
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self.speaker_verifier = SpeakerVerifier(savedir=os.path.join(script_dir, "pretrained_models", "spkrec-ecapa-voxceleb"))
+        self.isolate_speaker = False
         self._sv_buf = np.zeros(48000, dtype=np.float32)  # 1 second rolling buffer
         self._sv_score = 1.0
         self._sv_is_computing = False

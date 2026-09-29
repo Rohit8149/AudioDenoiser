@@ -200,10 +200,8 @@ class AudioDenoiserApp:
         self.tabview = ctk.CTkTabview(main, corner_radius=12)
         self.tabview.pack(fill="both", expand=True, pady=(10, 0))
         self.tabview.add("  🎤 Live  ")
-        self.tabview.add("  📁 Files  ")
 
         self._build_live_tab()
-        self._build_files_tab()
 
     def _build_header(self, parent):
         hdr = ctk.CTkFrame(parent, fg_color="transparent")
@@ -307,12 +305,12 @@ class AudioDenoiserApp:
         scroll.pack(fill="both", expand=True)
         self._speed_up_scroll(scroll)
 
+        self._build_spectrograms_card(scroll)
         self._build_network_card(scroll)
         self._build_device_card(scroll)
         self._build_voice_card(scroll)
         self._build_controls_card(scroll, "live")
         self._build_stats_card(scroll)
-        self._build_spectrograms_card(scroll)
 
     def _build_network_card(self, parent):
         c = self._card(parent, "Remote Control Network (MQTT)")
@@ -970,7 +968,6 @@ class AudioDenoiserApp:
         log(f"model reloaded with post_filter={pf}")
         msg = f"✓  Model reloaded (post-filter {'ON' if pf else 'OFF'})"
         self.tip_lbl.configure(text=msg, text_color=COLOR_ON)
-        self.file_status.configure(text=msg, text_color=COLOR_ON)
 
     # ═════════════════════════════════════════════════════════════════════
     #  ENGINE CONTROL
@@ -991,9 +988,9 @@ class AudioDenoiserApp:
             self._start_engine(denoise=True)
         else:
             # They want to turn denoising OFF.
-            # If Repeat is ON, we fall back to raw bypass mode so they can hear the original.
-            if self.repeat:
-                self._start_engine(denoise=False)
+            # We ALWAYS fall back to raw bypass mode so Teams still gets normal audio!
+            self._start_engine(denoise=False)
+            
         self._broadcast_state()
 
     def _toggle_repeat(self):
@@ -1038,11 +1035,6 @@ class AudioDenoiserApp:
             self.tip_lbl.configure(text="")
 
     def _start_engine(self, denoise: bool = True):
-        if self._file_busy:
-            self.tip_lbl.configure(
-                text="⚠  Cannot start live mode while file processing is active.",
-                text_color=COLOR_OFF)
-            return
         self._ensure_denoiser()
         self.block_ms = int(self.block_sel.get())
         self.block_n = self.dn.hop * self.block_ms // 10
@@ -1082,10 +1074,11 @@ class AudioDenoiserApp:
                     samplerate=self.dn.sr, channels=1, dtype="float32",
                     blocksize=self.block_n, device=dev_out, callback=out_cb)
         except Exception as e:
-            self.tip_lbl.configure(
-                text=f"⚠  Could not open audio device: {e}",
-                text_color=COLOR_OFF)
-            log(f"ERROR opening streams: {e}")
+            err_msg = f'Could not open audio device: {e}\n\nDid you select the correct Microphone and Output?'
+            self.tip_lbl.configure(text=err_msg, text_color=COLOR_OFF)
+            log(f'ERROR opening streams: {e}')
+            import tkinter.messagebox
+            tkinter.messagebox.showerror('Audio Error', err_msg)
             return
 
         log(f"stream opened: mode={'denoise' if denoise else 'bypass'} "
@@ -1123,11 +1116,17 @@ class AudioDenoiserApp:
         log("streams stopped")
 
     def _process_loop(self):
+        _diag_count = 0
         while self.running:
             try:
                 blk = self.in_q.get(timeout=0.2)
             except queue.Empty:
                 continue
+            
+            _diag_count += 1
+            if _diag_count % 50 == 1:
+                peak = float(np.max(np.abs(blk)))
+                log(f"DIAG: block #{_diag_count}, peak={peak:.6f}, len={len(blk)}")
                 
             try:
                 if self.mode == "bypass":
