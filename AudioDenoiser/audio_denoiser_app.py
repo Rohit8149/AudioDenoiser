@@ -1501,7 +1501,7 @@ class AudioDenoiserApp:
     def _update_biometrics(self):
         # Update the Live Biometric Match Meter if Voice Isolation is active
         if self.mode == "denoise" and self.dn is not None and getattr(self, "isolate_var", None) and self.isolate_var.get():
-            score = getattr(self.dn, "_latest_score", 0.0)
+            score = getattr(self.dn, "_sv_score", 0.0)
             # Clip between 0 and 1
             score = max(0.0, min(1.0, score))
             self.match_bar.set(score)
