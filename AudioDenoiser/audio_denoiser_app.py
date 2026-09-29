@@ -490,6 +490,10 @@ class AudioDenoiserApp:
         self.enroll_prompt.pack(side="left")
 
     def _toggle_isolate(self):
+        if self.isolate_var.get() and getattr(self, "live_cocktail_var", None) and self.live_cocktail_var.get():
+            self.live_cocktail_var.set(False)
+            self._toggle_cocktail()
+            
         if self.dn is not None:
             self.dn.isolate_speaker = self.isolate_var.get()
             if self.isolate_var.get():
@@ -518,6 +522,10 @@ class AudioDenoiserApp:
             self.root.after(100, self._start_all)
 
     def _toggle_cocktail(self):
+        if self.live_cocktail_var.get() and getattr(self, "isolate_var", None) and self.isolate_var.get():
+            self.isolate_var.set(False)
+            self._toggle_isolate()
+            
         if self.dn is not None:
             enabled = self.live_cocktail_var.get()
             if enabled:
@@ -991,6 +999,11 @@ class AudioDenoiserApp:
     # ═════════════════════════════════════════════════════════════════════
     #  PARAMETERS
     # ═════════════════════════════════════════════════════════════════════
+
+    def _on_thresh_change(self, val):
+        self.thresh_val_lbl.configure(text=f"{int(val*100)}%")
+        if self.dn:
+            self.dn.biometric_threshold = float(val)
 
     def _on_profile_change(self, choice: str):
         if choice == "Custom":
@@ -1499,16 +1512,19 @@ class AudioDenoiserApp:
         self.root.after(UI_FPS_MS, self._tick)
 
     def _update_biometrics(self):
-        # Update the Live Biometric Match Meter if Voice Isolation is active
-        if self.mode == "denoise" and self.dn is not None and getattr(self, "isolate_var", None) and self.isolate_var.get():
-            score = getattr(self.dn, "_sv_score", 0.0)
+        # Update the Live Biometric Match Meter
+        if self.mode == "denoise" and self.dn is not None and (self.isolate_var.get() or self.live_cocktail_var.get()):
+            if self.live_cocktail_var.get():
+                score = getattr(self.dn, "_cocktail_score", 0.0)
+            else:
+                score = getattr(self.dn, "_sv_score", 0.0)
             # Clip between 0 and 1
             score = max(0.0, min(1.0, score))
             self.match_bar.set(score)
             pct = int(score * 100)
             
-            # Color code based on threshold (0.28)
-            if score > 0.28:
+            thresh = self.threshold_var.get()
+            if score >= thresh:
                 self.match_bar.configure(progress_color="#00ff88") # Green/Match
                 self.match_val_lbl.configure(text=f"{pct}% (MATCH)", text_color="#00ff88")
             else:

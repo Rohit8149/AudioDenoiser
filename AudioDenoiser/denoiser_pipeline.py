@@ -90,6 +90,8 @@ class StreamingDenoiser:
         self.mask_floor_db = 100.0  # per-bin max suppression; 100 = unlimited
         self._hpf_zi: np.ndarray | None = None
         self.isolate_speaker = False
+        self.biometric_threshold = 0.25
+        self._cocktail_score = 0.0
         
         # Initialize SpeakerVerifier in background
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -303,7 +305,8 @@ class StreamingDenoiser:
                 
                 def bg_process(audio_chunk):
                     try:
-                        clean_audio = self.cocktail_separator.separate_and_isolate_array(audio_chunk, self.sr)
+                        clean_audio, score = self.cocktail_separator.separate_and_isolate_array(audio_chunk, self.sr, threshold=self.biometric_threshold)
+                        self._cocktail_score = score
                         target_len = len(audio_chunk)
                         if len(clean_audio) < target_len:
                             clean_audio = np.pad(clean_audio, (0, target_len - len(clean_audio)))

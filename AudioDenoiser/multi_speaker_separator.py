@@ -112,7 +112,7 @@ class MultiSpeakerSeparator:
             
         return final_audio, sr
 
-    def separate_and_isolate_array(self, audio_np, sr):
+    def separate_and_isolate_array(self, audio_np, sr, threshold=0.25):
         """Processes a raw 1D numpy array in memory (for live streaming)."""
         mixed_sig = torch.from_numpy(audio_np).unsqueeze(0).float()
         
