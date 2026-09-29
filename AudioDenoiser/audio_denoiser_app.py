@@ -14,6 +14,7 @@ import logging
 import os
 import queue
 import sys
+import json
 import threading
 import time
 import traceback
@@ -142,6 +143,14 @@ class AudioDenoiserApp:
 
     def __init__(self, root: ctk.CTk):
         self.root = root
+        self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+        self.saved_config = {}
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r") as f:
+                    self.saved_config = json.load(f)
+            except Exception:
+                pass
         root.title("AudioDenoiser")
         root.geometry("960x1060")
         root.minsize(900, 800)
@@ -393,7 +402,7 @@ class AudioDenoiserApp:
                 row=i, column=0, sticky="w", padx=(0, 12), pady=3)
 
         self.in_dev = ctk.CTkComboBox(dev, state="readonly", width=420,
-                                       font=ctk.CTkFont(size=11))
+                                       font=ctk.CTkFont(size=11), command=self._save_config)
         self.in_dev.grid(row=0, column=1, sticky="ew", pady=3)
 
         self.out_dev = ctk.CTkComboBox(dev, state="readonly", width=420,
@@ -924,6 +933,23 @@ class AudioDenoiserApp:
     #  DEVICE MANAGEMENT
     # ═════════════════════════════════════════════════════════════════════
 
+
+    def _save_config(self, _=None):
+        in_str = self.in_dev.get()
+        out_str = self.out_dev.get()
+        # Strip the index number (e.g. "1: CABLE" -> "CABLE")
+        in_name = in_str.split(": ", 1)[1] if ": " in in_str else in_str
+        out_name = out_str.split(": ", 1)[1] if ": " in out_str else out_str
+        
+        self.saved_config["in_dev_name"] = in_name
+        self.saved_config["out_dev_name"] = out_name
+        
+        try:
+            with open(self.config_path, "w") as f:
+                json.dump(self.saved_config, f)
+        except Exception as e:
+            print("Failed to save config:", e)
+
     def _refresh_devices(self):
         devs = sd.query_devices()
         default_api = sd.default.hostapi
@@ -944,10 +970,21 @@ class AudioDenoiserApp:
         self.in_dev.configure(values=ins)
         self.out_dev.configure(values=outs)
         din, dout = sd.default.device
-        if 0 <= din < len(devs) and ins:
+        # Load saved devices based on name (ignoring indices which can change)
+        saved_in = self.saved_config.get("in_dev_name", "")
+        saved_out = self.saved_config.get("out_dev_name", "")
+        
+        in_match = [t for t in ins if saved_in in t] if saved_in else []
+        if in_match:
+            self.in_dev.set(in_match[0])
+        elif 0 <= din < len(devs) and ins:
             match = [t for t in ins if t.startswith(f"{din}:")]
             self.in_dev.set(match[0] if match else ins[0])
-        if 0 <= dout < len(devs) and outs:
+            
+        out_match = [t for t in outs if saved_out in t] if saved_out else []
+        if out_match:
+            self.out_dev.set(out_match[0])
+        elif 0 <= dout < len(devs) and outs:
             match = [t for t in outs if t.startswith(f"{dout}:")]
             self.out_dev.set(match[0] if match else outs[0])
 
