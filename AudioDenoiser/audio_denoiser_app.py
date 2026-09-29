@@ -165,7 +165,8 @@ class AudioDenoiserApp:
                 pass
         root.title("NeuroAcoustic Engine")
         root.geometry("1280x720")
-        root.resizable(False, False)
+        root.resizable(True, True)
+        root.minsize(1280, 720)
         root.configure(fg_color=BG)
         
 
@@ -275,12 +276,13 @@ class AudioDenoiserApp:
                       font=ctk.CTkFont(size=10, weight="bold"), fg_color=PANEL_BORDER, hover_color=TEXT_DIM,
                       command=self._open_settings).pack(side="left", padx=15)
         
-        self.tip_lbl = ctk.CTkLabel(top_fr, text="", font=ctk.CTkFont(size=11), text_color=TEXT_DIM)
-        self.tip_lbl.pack(side="left", fill="x", expand=True, padx=10)
-
         self.stats_lbls = {}
         hdr_stats = ctk.CTkFrame(top_fr, fg_color="transparent")
         hdr_stats.pack(side="right", padx=15, pady=10)
+        
+        self.tip_lbl = ctk.CTkLabel(top_fr, text="", font=ctk.CTkFont(size=11), text_color=TEXT_DIM)
+        self.tip_lbl.pack(side="left", fill="x", expand=True, padx=10)
+        
         for key, name in [("lat", "LATENCY"), ("snr", "SNR"), ("infer", "INFERENCE")]:
             fr = ctk.CTkFrame(hdr_stats, fg_color="transparent")
             fr.pack(side="left", padx=8)
