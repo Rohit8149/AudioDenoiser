@@ -420,12 +420,21 @@ class AudioDenoiserApp:
         
         self.isolate_var = tk.BooleanVar(value=False)
         self.isolate_switch = ctk.CTkSwitch(
-            info_frm, text="Isolate My Voice (Beta)",
+            info_frm, text="Isolate My Voice (Fast)",
             variable=self.isolate_var, command=self._toggle_isolate,
             font=ctk.CTkFont(size=12, weight="bold"),
             state="normal" if has_profile else "disabled"
         )
         self.isolate_switch.pack(side="left", padx=(0, 25))
+        
+        self.live_cocktail_var = tk.BooleanVar(value=False)
+        self.live_cocktail_switch = ctk.CTkSwitch(
+            info_frm, text="Cocktail Party Separation (3s Delay)",
+            variable=self.live_cocktail_var, command=self._toggle_cocktail,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            state="normal" if has_profile else "disabled"
+        )
+        self.live_cocktail_switch.pack(side="left", padx=(0, 25))
         
         self.enroll_btn = ctk.CTkButton(
             info_frm, text="🎙️ Re-enroll Voice" if has_profile else "🎙️ Enroll My Voice", 
@@ -445,7 +454,7 @@ class AudioDenoiserApp:
         
         self.enroll_prompt = ctk.CTkLabel(
             info_frm, 
-            text="Record a 5-second sample to isolate your voice and cancel out background talking.",
+            text="Record a 15-second voice sample in a quiet room to generate your Biometric Centroid Vector.",
             font=ctk.CTkFont(size=11), text_color=COLOR_DIM, justify="left", wraplength=350)
         self.enroll_prompt.pack(side="left")
 
@@ -456,6 +465,29 @@ class AudioDenoiserApp:
                 self.dn.reload_profile()
         self._broadcast_state()
 
+    def _toggle_cocktail(self):
+        if self.dn is not None:
+            enabled = self.live_cocktail_var.get()
+            if enabled:
+                self.live_cocktail_switch.configure(text="Loading Cocktail AI...", state="disabled")
+                self.tip_lbl.configure(text="⏳ Loading massive SepFormer AI into memory (takes a few secs)...", text_color="yellow")
+                self.root.update_idletasks()
+                
+                def load_task():
+                    try:
+                        self.dn.set_cocktail_mode(True)
+                        self.root.after(0, lambda: self.live_cocktail_switch.configure(text="Cocktail Party Separation (3s Delay)", state="normal"))
+                        self.root.after(0, lambda: self.tip_lbl.configure(text="✅ Cocktail AI Active! (Expect 3s audio delay)", text_color=COLOR_ON))
+                    except Exception as e:
+                        log(f"Failed to load cocktail mode: {e!r}")
+                        self.root.after(0, lambda: self.live_cocktail_var.set(False))
+                        self.root.after(0, lambda: self.live_cocktail_switch.configure(text="Cocktail Party Separation (3s Delay)", state="normal"))
+                
+                import threading
+                threading.Thread(target=load_task, daemon=True).start()
+            else:
+                self.dn.set_cocktail_mode(False)
+                self.tip_lbl.configure(text="Cocktail Mode OFF. Standard Denoising Active.", text_color=COLOR_ON)
 
     def _play_voice(self):
         profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
@@ -489,31 +521,114 @@ class AudioDenoiserApp:
         try:
             dev_in = int(self.in_dev.get().split(":")[0])
         except (ValueError, IndexError):
-            self.enroll_prompt.configure(text="⚠️ Please select a microphone first!")
+            self.enroll_prompt.configure(text="❌ Please select a microphone first!")
             return
 
         self.enroll_btn.configure(state="disabled")
         self.play_voice_btn.configure(state="disabled")
-        self.enroll_prompt.configure(
-            text="🔴 RECORDING (5s): Please read aloud -> 'The quick brown fox jumps over the lazy dog. I am authenticating my voice.'",
-            text_color="orange"
-        )
+        self.enroll_prompt.configure(text="🔴 RECORDING (20s)...", text_color="orange")
         
+        abort_flag = [False]
+        
+        # --- Teleprompter Overlay ---
+        prompt_win = ctk.CTkToplevel(self.root)
+        
+        def on_close_prompt():
+            abort_flag[0] = True
+            import sounddevice as sd
+            sd.stop()
+            prompt_win.destroy()
+            self.enroll_prompt.configure(text="❌ Enrollment aborted by user.", text_color="#FF4444")
+            self.enroll_btn.configure(state="normal", text="🔄 Re-enroll Voice")
+            if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")):
+                self.play_voice_btn.configure(state="normal")
+                self.isolate_switch.configure(state="normal")
+
+        prompt_win.protocol("WM_DELETE_WINDOW", on_close_prompt)
+        prompt_win.title("Voice Enrollment")
+        prompt_win.geometry("500x350")
+        prompt_win.attributes("-topmost", True)
+        prompt_win.geometry(f"+{self.root.winfo_x() + 100}+{self.root.winfo_y() + 50}")
+        
+        lbl_title = ctk.CTkLabel(prompt_win, text="🔴 RECORDING IN PROGRESS", text_color="#FF4444", font=ctk.CTkFont(size=20, weight="bold"))
+        lbl_title.pack(pady=(20, 10))
+        
+        script_text = (
+            "Please read the following text in your normal voice:\n\n"
+            "\"Hello! I am recording my voice to create a biometric profile for my Advanced Machine Learning project. "
+            "The system is currently mapping the unique frequencies of my vocal cords. "
+            "Once I finish reading this paragraph, the AI will use this recording to mathematically separate my voice from any other people talking in the background. "
+            "This is a live test of the Cocktail Party separation system!\""
+        )
+        lbl_script = ctk.CTkLabel(prompt_win, text=script_text, font=ctk.CTkFont(size=15), wraplength=450, justify="center")
+        lbl_script.pack(pady=10, padx=20)
+        
+        lbl_timer = ctk.CTkLabel(prompt_win, text="20 seconds remaining...", font=ctk.CTkFont(size=18, weight="bold"))
+        lbl_timer.pack(pady=(20, 20))
+        
+        def update_timer(secs):
+            if not prompt_win.winfo_exists():
+                return
+            if secs > 0:
+                lbl_timer.configure(text=f"{secs} seconds remaining...")
+                self.root.after(1000, update_timer, secs - 1)
+            else:
+                lbl_timer.configure(text="Purifying audio (DeepFilterNet)...", text_color="yellow")
+        
+        update_timer(20)
+        # ----------------------------
+
         def record_task():
             try:
                 import soundfile as sf
-                # Record 5 seconds at 48000 Hz
-                audio = sd.rec(int(5 * 48000), samplerate=48000, channels=1, device=dev_in, dtype='float32')
+                audio = sd.rec(int(20 * 48000), samplerate=48000, channels=1, device=dev_in, dtype='float32')
                 sd.wait()
                 
-                profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
-                sf.write(profile_path, audio, 48000)
+                if abort_flag[0]:
+                    return  # User closed the window, abort the save process completely
                 
-                self.enroll_prompt.configure(
-                    text="✅ Voice Print saved! The AI will now use this to filter out other voices.",
-                    text_color=COLOR_ON
-                )
-                self.enroll_btn.configure(text="🎙️ Re-enroll Voice")
+                profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
+                temp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile_raw.wav")
+                
+                # Save the raw noisy mic recording
+                sf.write(temp_path, audio, 48000)
+                
+                self.enroll_prompt.configure(text="🧹 Purifying voice print using DeepFilterNet...", text_color="yellow")
+                if prompt_win.winfo_exists():
+                    prompt_win.destroy()
+                
+                # Denoise the profile offline before ECAPA sees it!
+                if self.dn is not None:
+                    self.dn.denoise_file(temp_path, profile_path)
+                else:
+                    sf.write(profile_path, audio, 48000)
+                    
+                # --- Smart Silence Trimming (Voice Activity Detection) ---
+                import numpy as np
+                clean_audio, sr = sf.read(profile_path)
+                
+                # Find the first moment of actual speech (skipping up to 5 seconds of silence)
+                threshold = 0.01  # RMS threshold
+                window = int(sr * 0.1) # 100ms
+                start_idx = 0
+                # Ignore first 0.4 seconds to bypass DeepFilterNet startup clicks
+                for i in range(int(sr * 0.4), len(clean_audio), window):
+                    chunk = clean_audio[i:i+window]
+                    if np.sqrt(np.mean(chunk**2)) > threshold:
+                        start_idx = max(0, i - int(sr * 0.15)) # 150ms pre-roll to keep breath/start of word
+                        break
+                        
+                # Crop EXACTLY 15 seconds starting from the first spoken word!
+                end_idx = min(len(clean_audio), start_idx + int(15 * sr))
+                final_15s_audio = clean_audio[start_idx:end_idx]
+                sf.write(profile_path, final_15s_audio, sr)
+                # ---------------------------------------------------------
+                
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                
+                self.enroll_prompt.configure(text="✅ Voice Print saved! The AI will now use this to filter out other voices.", text_color=COLOR_ON)
+                self.enroll_btn.configure(text="🔄 Re-enroll Voice")
             except Exception as e:
                 self.enroll_prompt.configure(text=f"❌ Error recording: {e}", text_color=COLOR_OFF)
             finally:
@@ -521,6 +636,7 @@ class AudioDenoiserApp:
                 if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")):
                     self.play_voice_btn.configure(state="normal")
                     self.isolate_switch.configure(state="normal")
+                
                 
         threading.Thread(target=record_task, daemon=True).start()
 
@@ -690,6 +806,77 @@ class AudioDenoiserApp:
 
     # ── Files tab ────────────────────────────────────────────────────────
 
+    def _build_files_tab(self):
+        tab = self.tabview.tab("  📁 Files  ")
+        scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        scroll.pack(fill="both", expand=True)
+        self._speed_up_scroll(scroll)
+
+        self._build_controls_card(scroll, "file")
+
+        c = self._card(scroll, "📂  Denoise Audio Files")
+
+        # ── file list + buttons ──────────────────────────────────────
+        body = ctk.CTkFrame(c, fg_color="transparent")
+        body.pack(fill="x")
+        body.columnconfigure(0, weight=1)
+
+        # Dark-styled Listbox (no CTk equivalent)
+        self.file_list = tk.Listbox(
+            body, height=8, selectmode="extended",
+            bg="#1a1a2e", fg="#cbd5e1", selectbackground="#1f6aa5",
+            selectforeground="white", borderwidth=0,
+            highlightthickness=1, highlightcolor="#334155",
+            highlightbackground="#252540",
+            font=("Segoe UI", 10), activestyle="none")
+        self.file_list.grid(row=0, column=0, rowspan=5, sticky="nsew",
+                            padx=(0, 12), pady=2)
+
+        btns = [
+            ("📄  Add Files…",       self._add_files,    0, False),
+            ("✕   Remove Selected",  self._remove_files, 1, False),
+            ("🗑️  Clear All",        self._clear_files,  2, False),
+        ]
+        for text, cmd, row, accent in btns:
+            ctk.CTkButton(body, text=text, command=cmd, width=160, height=34,
+                          fg_color="gray25", hover_color="gray35",
+                          font=ctk.CTkFont(size=11), corner_radius=8
+                          ).grid(row=row, column=1, pady=2, sticky="ew")
+
+        # denoise button (accent)
+        self.denoise_btn = ctk.CTkButton(
+            body, text="▶  Denoise Files", command=self._denoise_files,
+            width=160, height=40, corner_radius=8,
+            font=ctk.CTkFont(size=13, weight="bold"))
+        self.denoise_btn.grid(row=3, column=1, pady=(12, 2), sticky="ew")
+
+        ctk.CTkButton(body, text="📂  Open Output Folder",
+                      command=self._open_out_dir, width=160, height=34,
+                      fg_color="gray25", hover_color="gray35",
+                      font=ctk.CTkFont(size=11), corner_radius=8
+                      ).grid(row=4, column=1, pady=2, sticky="ew")
+
+        # Target Speaker Separation Switch
+        profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
+        has_profile = os.path.exists(profile_path)
+        self.file_separate_var = tk.BooleanVar(value=False)
+        self.file_separate_switch = ctk.CTkSwitch(
+            c, text="Cocktail Party Separation (Requires Voice Print)",
+            variable=self.file_separate_var,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            state="normal" if has_profile else "disabled"
+        )
+        self.file_separate_switch.pack(fill="x", pady=(15, 0), padx=10)
+
+        # ── status label ─────────────────────────────────────────────
+        self.file_status = ctk.CTkLabel(
+            c,
+            text="Supported: wav, mp3, flac, ogg, m4a, aac, wma\n"
+                 "Output: 48 kHz mono WAV → AudioDenoiser\\output\\<name>_denoised.wav",
+            font=ctk.CTkFont(size=11), text_color=COLOR_DIM,
+            justify="left", anchor="w", wraplength=600)
+        self.file_status.pack(fill="x", pady=(8, 0))
+
     # ═════════════════════════════════════════════════════════════════════
     #  DEVICE MANAGEMENT
     # ═════════════════════════════════════════════════════════════════════
@@ -845,6 +1032,13 @@ class AudioDenoiserApp:
         log(f"model reloaded with post_filter={pf}")
         msg = f"✓  Model reloaded (post-filter {'ON' if pf else 'OFF'})"
         self.tip_lbl.configure(text=msg, text_color=COLOR_ON)
+        self.file_status.configure(text=msg, text_color=COLOR_ON)
+        
+        # Sync states
+        if hasattr(self, 'isolate_var'):
+            self.dn.isolate_speaker = self.isolate_var.get()
+        if hasattr(self, 'live_cocktail_var'):
+            self.dn.set_cocktail_mode(self.live_cocktail_var.get())
 
     # ═════════════════════════════════════════════════════════════════════
     #  ENGINE CONTROL
@@ -1030,6 +1224,123 @@ class AudioDenoiserApp:
     # ═════════════════════════════════════════════════════════════════════
     #  FILE MODE
     # ═════════════════════════════════════════════════════════════════════
+
+    def _add_files(self):
+        from tkinter import filedialog
+        paths = filedialog.askopenfilenames(
+            title="Choose audio files to denoise",
+            filetypes=[
+                ("Audio files", "*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.wma"),
+                ("All files", "*.*")])
+        existing = set(self.file_list.get(0, "end"))
+        for p in paths:
+            if p not in existing:
+                self.file_list.insert("end", p)
+
+    def _remove_files(self):
+        for idx in sorted(self.file_list.curselection(), reverse=True):
+            self.file_list.delete(idx)
+
+    def _clear_files(self):
+        self.file_list.delete(0, "end")
+
+    def _open_out_dir(self):
+        os.makedirs(self.out_dir, exist_ok=True)
+        os.startfile(self.out_dir)
+
+    def _denoise_files(self):
+        if self._file_busy:
+            return
+        if self.mode is not None:
+            self.file_status.configure(
+                text="⚠  Turn the live denoiser OFF before processing files.",
+                text_color=COLOR_OFF)
+            return
+        files = list(self.file_list.get(0, "end"))
+        if not files:
+            self.file_status.configure(text="⚠  Add some files first.",
+                                       text_color=COLOR_OFF)
+            return
+        self._ensure_denoiser()
+        self._file_busy = True
+        self.denoise_btn.configure(state="disabled")
+        self.onoff_btn.configure(state="disabled")     # prevent live during file
+        os.makedirs(self.out_dir, exist_ok=True)
+
+        def worker():
+            results = []
+            do_separate = self.file_separate_var.get()
+            
+            if do_separate:
+                try:
+                    import torch
+                    from multi_speaker_separator import MultiSpeakerSeparator
+                    import soundfile as sf
+                    self._file_progress = "Loading massive Separation AI (this takes a moment)..."
+                    separator = MultiSpeakerSeparator(device="cuda" if torch.cuda.is_available() else "cpu")
+                    profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
+                except Exception as e:
+                    log(f"Failed to load separator: {e!r}")
+                    self._file_results = [("fail", (files[0], str(e)))]
+                    self._file_done = True
+                    return
+
+            for i, src in enumerate(files):
+                self._file_progress = f"Processing {i + 1}/{len(files)}: {os.path.basename(src)}"
+                try:
+                    stem = os.path.splitext(os.path.basename(src))[0]
+                    dst = os.path.join(self.out_dir, f"{stem}_denoised.wav")
+                    
+                    if do_separate:
+                        def progress_cb(prog):
+                            self._file_progress = f"Separating Overlapping Voices: {int(prog*100)}%"
+                            
+                        final_audio, sr = separator.separate_and_isolate(
+                            src, profile_path, progress_callback=progress_cb
+                        )
+                        
+                        # Save the separated audio to a temp file, then denoise it to remove robotic artifacts
+                        temp_dst = os.path.join(self.out_dir, f"{stem}_temp.wav")
+                        sf.write(temp_dst, final_audio.squeeze(0).numpy(), sr)
+                        
+                        self._file_progress = f"Denoising {os.path.basename(src)}..."
+                        self._apply_params("file")
+                        r = self.dn.denoise_file(temp_dst, dst)
+                        if os.path.exists(temp_dst):
+                            os.remove(temp_dst)
+                    else:
+                        self._apply_params("file")
+                        r = self.dn.denoise_file(src, dst)
+                        
+                    results.append(("ok", r))
+                except Exception as e:
+                    log(f"file denoise failed for {src}: {e!r}")
+                    results.append(("fail", (src, str(e))))
+            self._file_results = results
+            self._file_done = True
+
+        self._file_progress = "Starting…"
+        self._file_done = False
+        threading.Thread(target=worker, daemon=True).start()
+        self.root.after(200, self._poll_file_worker)
+
+    def _poll_file_worker(self):
+        self.file_status.configure(text=f"⏳  {self._file_progress}",
+                                   text_color=COLOR_ACCENT)
+        if not self._file_done:
+            self.root.after(200, self._poll_file_worker)
+            return
+        self._file_busy = False
+        self.denoise_btn.configure(state="normal")
+        self.onoff_btn.configure(state="normal")       # re-enable live button
+        ok = [r for s, r in self._file_results if s == "ok"]
+        fail = [r for s, r in self._file_results if s == "fail"]
+        msg = f"✓  Done: {len(ok)} file(s) denoised → {self.out_dir}"
+        if fail:
+            msg += f"  ({len(fail)} failed — see audiodenoiser.log)"
+        self.file_status.configure(
+            text=msg, text_color=COLOR_OFF if fail else COLOR_ON)
+        log(msg)
 
     # ═════════════════════════════════════════════════════════════════════
     #  TICK / UPDATES

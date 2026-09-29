@@ -63,6 +63,7 @@ class StreamingDenoiser:
             log_file=None,
         )
         self.model = self.model.cpu()  # Prevent CUDA mismatch crash during live demo
+        self.model.eval()
         self.post_filter = post_filter
         self.p = ModelParams()
         self.nb_df = getattr(self.model, "nb_df", getattr(self.model, "df_bins", self.p.nb_df))
@@ -88,6 +89,7 @@ class StreamingDenoiser:
         self.highpass_hz = 0.0  # 0 disables
         self.mask_floor_db = 100.0  # per-bin max suppression; 100 = unlimited
         self._hpf_zi: np.ndarray | None = None
+        self.isolate_speaker = False
         
         # Initialize SpeakerVerifier in background
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -198,7 +200,10 @@ class StreamingDenoiser:
         self.reset()
         outs = []
         for i in range(0, x.shape[1], chunk):
-            outs.append(self.process_block(x[:, i : i + chunk]))
+            # Explicitly call the underlying DFN engine directly so we bypass the live Cocktail streaming buffers
+            b = x[:, i : i + chunk]
+            b_1d = b.reshape(-1) # Force 1D shape to match expected input for _dfn_process_block
+            outs.append(self._dfn_process_block(b_1d))
         wet = np.concatenate(outs)
         # output is start-aligned with the input (verified empirically); the
         # final ~fft-hop samples are still in the synthesis buffers and lost
@@ -221,7 +226,8 @@ class StreamingDenoiser:
             if hist is None:
                 return col
             return np.hstack([hist, col])[:, -400:]
-        self.spec_hist = push(self.spec_hist, 20 * np.log10(noisy_mag.mean(axis=0) + 1e-9))
+        if not getattr(self, "cocktail_mode", False):
+            self.spec_hist = push(self.spec_hist, 20 * np.log10(noisy_mag.mean(axis=0) + 1e-9))
         
         # Advance the synthesis buffer so it doesn't glitch when turned back on
         _ = self.df.synthesis(spec)
@@ -236,12 +242,115 @@ class StreamingDenoiser:
     # they zero-pad the boundaries, causing massive audio gaps and a 25Hz "kr kr" tearing noise.
     # 
     # This Overlap-Add Crossfader is the mathematically perfect, industry-standard solution.
-    # It passes 120ms (3 blocks) of context natively to the PyTorch model, extracts the 
-    # target middle block, and crossfades the boundaries using a Hanning window. 
+    def set_cocktail_mode(self, enabled: bool):
+        if not enabled:
+            self.cocktail_mode = False
+            self._cocktail_in_buf = []
+            self._cocktail_out_buf = []
+            return
+            
+        try:
+            if getattr(self, "cocktail_separator", None) is None:
+                import os
+                import threading
+                from multi_speaker_separator import MultiSpeakerSeparator
+                import torch
+                
+                # Load the separator (this takes a moment on first run)
+                self.cocktail_separator = MultiSpeakerSeparator(device="cuda" if torch.cuda.is_available() else "cpu")
+                profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
+                self.cocktail_separator.verifier.load_profile(profile_path)
+                
+                self._cocktail_in_buf = []
+                self._cocktail_out_buf = []
+                self._cocktail_lock = threading.Lock()
+                print("[Cocktail Mode] Separator Loaded & Initialized.")
+            self.cocktail_mode = True
+        except Exception as e:
+            self.cocktail_mode = False
+            raise e
+
+    # =========================================================================================
+    # THE HOLY GRAIL: 120ms Overlap-Add Crossfader (DO NOT MODIFY THE MATH)
     # This guarantees 0% tearing, flawless neural network memory, and no gating artifacts.
     # =========================================================================================
-    @torch.no_grad()
     def process_block(self, block: np.ndarray) -> np.ndarray:
+        """Process one block. Routes to Cocktail mode or standard DFN."""
+        if getattr(self, "is_offline_processing", False):
+            return np.zeros_like(block)  # Yield to offline file processing to prevent GRU memory scrambling
+            
+        # Update raw microphone statistics for the UI!
+        ein = np.mean(block**2) + 1e-12
+        self.stats.in_dbfs = float(10 * np.log10(ein))
+        self.stats.blocks += 1
+        
+        # (Anti-Crosstalk Smart Ducking gate removed because user switched to wireless earphones)
+            
+        if getattr(self, "cocktail_mode", False):
+            import threading
+            import torch
+            
+            # --- RAW SPECTROGRAM FIX ---
+            # Calculate stateless STFT so the UI top graph shows the true raw microphone
+            with torch.no_grad():
+                block_t = torch.from_numpy(block).float()
+                # Use same FFT settings as DeepFilterNet (48kHz)
+                window = torch.hann_window(960)
+                stft_res = torch.stft(block_t, n_fft=960, hop_length=480, window=window, return_complex=True)
+                mag = torch.abs(stft_res).numpy()
+            
+            def push(hist, mag_db):
+                col = mag_db[:, None].astype(np.float32)
+                if hist is None: return col
+                return np.hstack([hist, col])[:, -400:]
+                
+            self.spec_hist = push(self.spec_hist, 20 * np.log10(mag.mean(axis=1) + 1e-9))
+            # ---------------------------
+            self._cocktail_in_buf.append(block)
+            
+            # Calculate how many blocks equal 3 seconds
+            block_sec = len(block) / self.sr
+            target_blocks = int(3.0 / block_sec)
+            
+            if len(self._cocktail_in_buf) >= target_blocks:
+                chunk_to_process = np.concatenate(self._cocktail_in_buf)
+                self._cocktail_in_buf = []
+                
+                def bg_process(audio_chunk):
+                    try:
+                        clean_audio = self.cocktail_separator.separate_and_isolate_array(audio_chunk, self.sr)
+                        target_len = len(audio_chunk)
+                        if len(clean_audio) < target_len:
+                            clean_audio = np.pad(clean_audio, (0, target_len - len(clean_audio)))
+                        elif len(clean_audio) > target_len:
+                            clean_audio = clean_audio[:target_len]
+                        
+                        block_size = len(block)
+                        blocks = [clean_audio[i:i+block_size] for i in range(0, len(clean_audio), block_size)]
+                        
+                        # Pass the separated audio through DeepFilterNet to remove hiss/background noise!
+                        denoised_blocks = []
+                        for b in blocks:
+                            denoised_blocks.append(self._dfn_process_block(b))
+                            
+                        with self._cocktail_lock:
+                            self._cocktail_out_buf.extend(denoised_blocks)
+                    except Exception as e:
+                        print("Cocktail Async Error:", e)
+                        
+                threading.Thread(target=bg_process, args=(chunk_to_process,), daemon=True).start()
+            
+            with self._cocktail_lock:
+                if len(self._cocktail_out_buf) > 0:
+                    out = self._cocktail_out_buf.pop(0)
+                else:
+                    out = np.zeros_like(block)
+            return out
+        else:
+            return self._dfn_process_block(block)
+
+    @torch.no_grad()
+    def _dfn_process_block(self, block: np.ndarray) -> np.ndarray:
         """Process one block of mono float32 samples with a perfect mathematical crossfade."""
         t0 = time.perf_counter()
         
@@ -388,7 +497,7 @@ class StreamingDenoiser:
         }
         infer_ms = (time.perf_counter() - t0) * 1000
         st = self.stats
-        st.in_dbfs = float(10 * np.log10(ein))
+        # in_dbfs is now calculated at the very beginning of process_block
         st.out_dbfs = float(10 * np.log10(eout))
         st.suppression_db = self._smooth["supp"]
         st.snr_est_db = self._smooth["snr"]
@@ -404,7 +513,8 @@ class StreamingDenoiser:
                 return col
             return np.hstack([hist, col])[:, -400:]
 
-        self.spec_hist = push(self.spec_hist, 20 * np.log10(noisy_mag.mean(axis=0) + 1e-9))
+        if not getattr(self, "cocktail_mode", False):
+            self.spec_hist = push(self.spec_hist, 20 * np.log10(noisy_mag.mean(axis=0) + 1e-9))
         
         # Visually reflect the gate mute on the bottom spectrogram
         vis_enh_mag = enh_mag.mean(axis=0)
