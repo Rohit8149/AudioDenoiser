@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NeuroAcoustic Engine - Web Control</title>
+    <title>AI Audio Cleaner - Web Control</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
         :root {
@@ -195,7 +195,7 @@
 </head>
 <body>
     <div class="header">
-        <h1>NeuroAcoustic</h1>
+        <h1>AI Audio Cleaner</h1>
         <p class="subtitle">ENGINE <span>·</span> WEB CONTROLLER</p>
     </div>
 
@@ -282,7 +282,7 @@
                 
                 // System Master
                 const masterClass = dev.denoise_on ? 'master-btn on' : 'master-btn off';
-                const masterText = dev.denoise_on ? 'SYSTEM MASTER (ON)' : 'SYSTEM MASTER (OFF)';
+                const masterText = dev.denoise_on ? 'MASTER AI SWITCH (ON)' : 'MASTER AI SWITCH (OFF)';
                 
                 // Mode logic
                 const modeIsolate = dev.isolate_on && !dev.cocktail_on;

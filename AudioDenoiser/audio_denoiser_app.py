@@ -163,7 +163,7 @@ class AudioDenoiserApp:
                     self.saved_config = json.load(f)
             except Exception:
                 pass
-        root.title("NeuroAcoustic Engine")
+        root.title("AI Audio Cleaner")
         root.geometry("1280x720")
         root.resizable(True, True)
         root.minsize(1280, 720)
@@ -240,7 +240,7 @@ class AudioDenoiserApp:
     def _build_left_sidebar(self, parent):
         brand_fr = ctk.CTkFrame(parent, fg_color="transparent")
         brand_fr.pack(fill="x", pady=(20, 30), padx=15)
-        ctk.CTkLabel(brand_fr, text="NeuroAcoustic", font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w")
+        ctk.CTkLabel(brand_fr, text="AI Audio Cleaner", font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_PRIMARY).pack(anchor="w")
         ctk.CTkLabel(brand_fr, text="ENGINE · LIVE EDGE-COMPUTE", font=ctk.CTkFont(size=10), text_color=CYAN).pack(anchor="w")
 
         self._build_device_card(parent)
@@ -254,7 +254,7 @@ class AudioDenoiserApp:
         top_fr.pack(fill="x")
         top_fr.pack_propagate(False)
 
-        self.onoff_btn = ctk.CTkButton(top_fr, text="SYSTEM MASTER", width=180, height=36,
+        self.onoff_btn = ctk.CTkButton(top_fr, text="MASTER AI SWITCH", width=180, height=36,
                                        font=ctk.CTkFont(size=12, weight="bold"),
                                        fg_color=CRIMSON, hover_color=CRIMSON, corner_radius=18,
                                        command=self._toggle_main)
@@ -570,7 +570,7 @@ class AudioDenoiserApp:
     def _update_buttons(self):
         denoise_on = self.mode == "denoise"
         self.onoff_btn.configure(
-            text="SYSTEM MASTER (ON)" if denoise_on else "SYSTEM MASTER",
+            text="MASTER AI SWITCH (ON)" if denoise_on else "MASTER AI SWITCH",
             fg_color=GREEN if denoise_on else CRIMSON,
             hover_color=GREEN if denoise_on else CRIMSON)
             
