@@ -293,7 +293,7 @@ class AudioDenoiserApp:
         self._build_stats_card(parent)
         
         hidden_fr = ctk.CTkFrame(parent)
-        for k in ["blocks", "uptime", "params", "bins", "fft", "srio"]:
+        for k in ["rt", "blocks", "uptime", "params", "bins", "fft", "srio"]:
             l = ctk.CTkLabel(hidden_fr, text="")
             self.stats_lbls[k] = l
 
