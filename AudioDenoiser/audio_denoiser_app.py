@@ -1520,6 +1520,15 @@ class AudioDenoiserApp:
                     continue
                 img = self._render_hist(hist, is_enh)
                 
+            cw = lbl.winfo_width()
+            ch = lbl.winfo_height()
+            
+            # If the window is maximized and the label is larger than the default image size, scale it up!
+            if cw > 10 and ch > 10 and (cw != IMG_W or ch != IMG_H):
+                img = img.resize((cw, ch), Image.BILINEAR)
+            else:
+                cw, ch = IMG_W, IMG_H
+                
             photo = ImageTk.PhotoImage(img)
             lbl.configure(image=photo, width=IMG_W, height=IMG_H)
             lbl.image = photo
