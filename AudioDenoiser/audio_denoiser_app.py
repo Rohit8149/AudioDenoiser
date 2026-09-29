@@ -1491,6 +1491,8 @@ class AudioDenoiserApp:
         arr = arr[: rows * 3, :].reshape(rows, 3, -1).mean(axis=1)
         # auto-gain: track a slowly moving ceiling so quiet mics stay visible
         ceiling = float(np.percentile(arr, 99.8))
+        if ceiling < -90.0:
+            ceiling = -10.0  # Prevent auto-gain from boosting pure artificial silence to maximum brightness
         if not hasattr(self, "_spec_vmax"):
             self._spec_vmax = ceiling
         self._spec_vmax = 0.9 * self._spec_vmax + 0.1 * max(ceiling, -80.0)

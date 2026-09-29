@@ -224,7 +224,7 @@ class StreamingDenoiser:
         def push(hist, mag_db):
             col = mag_db[:, None].astype(np.float32)
             if hist is None:
-                hist = np.full((len(mag_db), 399), -100.0, dtype=np.float32)
+                hist = np.full((len(mag_db), 399), -150.0, dtype=np.float32)
             return np.hstack([hist, col])[:, -400:]
         if not getattr(self, "cocktail_mode", False):
             self.spec_hist = push(self.spec_hist, 20 * np.log10(noisy_mag.mean(axis=0) + 1e-9))
@@ -302,7 +302,7 @@ class StreamingDenoiser:
             def push(hist, mag_db):
                 col = mag_db[:, None].astype(np.float32)
                 if hist is None:
-                    hist = np.full((len(mag_db), 399), -100.0, dtype=np.float32)
+                    hist = np.full((len(mag_db), 399), -150.0, dtype=np.float32)
                 return np.hstack([hist, col])[:, -400:]
                 
             self.spec_hist = push(self.spec_hist, 20 * np.log10(mag.mean(axis=1) + 1e-9))
@@ -511,7 +511,7 @@ class StreamingDenoiser:
         def push(hist, mag_db):
             col = mag_db[:, None].astype(np.float32)
             if hist is None:
-                hist = np.full((len(mag_db), 399), -100.0, dtype=np.float32)
+                hist = np.full((len(mag_db), 399), -150.0, dtype=np.float32)
             return np.hstack([hist, col])[:, -400:]
 
         if not getattr(self, "cocktail_mode", False):
