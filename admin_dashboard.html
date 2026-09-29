@@ -3,62 +3,216 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AML Lab - Admin Control Panel</title>
+    <title>NeuroAcoustic Engine - Web Control</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f1011; color: #cbd5e1; margin: 0; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; }
-        h1 { color: #f7f7f8; text-align: center; margin-bottom: 5px; }
-        p.subtitle { text-align: center; color: #757585; margin-bottom: 40px; }
-        .card { background-color: #1a1a2e; border: 1px solid #252540; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
-        .status-bar { padding: 10px; border-radius: 8px; margin-bottom: 20px; text-align: center; font-weight: bold; }
-        .connected { background-color: rgba(0, 255, 136, 0.1); color: #00ff88; border: 1px solid #00ff88; }
-        .disconnected { background-color: rgba(255, 68, 68, 0.1); color: #ff4444; border: 1px solid #ff4444; }
-        
-        .device-row { display: flex; align-items: center; justify-content: space-between; padding: 15px 0; border-bottom: 1px solid #252540; }
-        .device-row:last-child { border-bottom: none; }
-        .device-info { display: flex; flex-direction: column; gap: 5px; }
-        .device-id { font-size: 12px; color: #757585; font-weight: bold;}
-        
-        .profile-select { background-color: #0f1011; color: #f7f7f8; border: 1px solid #252540; padding: 5px 10px; border-radius: 6px; font-size: 14px; font-weight: bold; outline: none; cursor: pointer; }
-        .profile-select:hover { border-color: #1f6aa5; }
-        
-        .controls { display: flex; gap: 10px; }
-        .btn { padding: 10px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; transition: 0.2s; opacity: 0.5; color: white;}
-        .btn:hover { opacity: 0.8; }
-        
-        /* Active states */
-        .btn-on.active { background-color: #00ff88; color: #0f1011; opacity: 1; box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);}
-        .btn-off.active { background-color: #ff4444; color: white; opacity: 1; box-shadow: 0 0 10px rgba(255, 68, 68, 0.5);}
-        .btn-iso.active { background-color: #1f6aa5; color: white; opacity: 1; box-shadow: 0 0 10px rgba(31, 106, 165, 0.5);}
-        
-        /* Inactive states */
-        .btn-on { background-color: #00ff88; color: #0f1011; }
-        .btn-off { background-color: #ff4444; color: white; }
-        .btn-iso { background-color: #1f6aa5; color: white; }
+        :root {
+            --bg: #0D0D12;
+            --panel: #1A1A24;
+            --border: #2A2A35;
+            --cyan: #00E5FF;
+            --green: #00FF88;
+            --crimson: #FF3366;
+            --text-pri: #E8E8F0;
+            --text-mut: #6B6B80;
+            --text-dim: #44445A;
+        }
 
-        .empty-state { text-align: center; color: #757585; padding: 20px; font-style: italic; }
+        * { box-sizing: border-box; }
+        
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: var(--bg); 
+            color: var(--text-pri); 
+            margin: 0; 
+            padding: 10px; 
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .header {
+            text-align: center;
+            padding: 15px 0 25px 0;
+        }
+
+        h1 { margin: 0; font-size: 1.5rem; letter-spacing: 1px; }
+        .subtitle { margin: 5px 0 0 0; font-size: 0.75rem; color: var(--cyan); letter-spacing: 2px; font-weight: bold; }
+        .subtitle span { color: var(--text-dim); }
+
+        .container { 
+            max-width: 600px; 
+            margin: 0 auto; 
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .status-bar { 
+            background-color: var(--panel);
+            border: 1px solid var(--border);
+            padding: 12px; 
+            border-radius: 8px; 
+            text-align: center; 
+            font-weight: bold; 
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            transition: all 0.3s;
+        }
+        
+        .status-bar.connected { border-color: var(--green); color: var(--green); box-shadow: 0 0 10px rgba(0,255,136,0.1); }
+        .status-bar.disconnected { border-color: var(--crimson); color: var(--crimson); }
+
+        .device-card { 
+            background-color: var(--panel); 
+            border: 1px solid var(--border); 
+            border-radius: 12px; 
+            padding: 20px; 
+        }
+
+        .device-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .device-id { font-size: 0.85rem; color: var(--text-mut); font-weight: bold; letter-spacing: 1px;}
+        .live-badge { color: var(--green); font-size: 0.7rem; font-weight: bold; display: flex; align-items: center; gap: 5px;}
+        .live-badge::before { content: ''; display: block; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+        .control-group {
+            margin-bottom: 25px;
+        }
+        
+        .control-label {
+            font-size: 0.75rem;
+            color: var(--text-mut);
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+            display: block;
+            letter-spacing: 1px;
+        }
+
+        /* Large Master Button */
+        .master-btn {
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .master-btn.off { background-color: var(--crimson); color: white; }
+        .master-btn.on { background-color: var(--green); color: var(--bg); box-shadow: 0 0 15px rgba(0,255,136,0.2); }
+
+        /* Segmented Buttons */
+        .segmented-control {
+            display: flex;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .seg-btn {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-mut);
+            padding: 10px 5px;
+            font-size: 0.75rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: 0.2s;
+            border-right: 1px solid var(--border);
+        }
+        .seg-btn:last-child { border-right: none; }
+        .seg-btn:hover { color: var(--text-pri); }
+        .seg-btn.active { background: var(--cyan); color: var(--bg); }
+
+        /* Sliders */
+        .slider-row {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-top: 10px;
+        }
+        
+        input[type=range] {
+            flex: 1;
+            accent-color: var(--cyan);
+            height: 6px;
+            background: var(--bg);
+            border-radius: 3px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--cyan);
+            cursor: pointer;
+        }
+
+        .slider-val {
+            min-width: 50px;
+            text-align: right;
+            font-size: 0.85rem;
+            font-weight: bold;
+            color: var(--cyan);
+        }
+
+        /* Select */
+        select {
+            width: 100%;
+            background-color: var(--bg);
+            color: var(--text-pri);
+            border: 1px solid var(--border);
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            outline: none;
+            cursor: pointer;
+        }
+        select:focus { border-color: var(--cyan); }
+
+        .empty-state { text-align: center; color: var(--text-dim); padding: 40px 20px; font-style: italic; }
+
+        @media (max-width: 480px) {
+            .seg-btn { font-size: 0.65rem; padding: 12px 2px; }
+        }
     </style>
 </head>
 <body>
+    <div class="header">
+        <h1>NeuroAcoustic</h1>
+        <p class="subtitle">ENGINE <span>·</span> WEB CONTROLLER</p>
+    </div>
+
     <div class="container">
-        <h1>Admin Control Panel</h1>
-        <p class="subtitle">Remote AI Control for AML Distributed Demo</p>
-        
         <div id="connection-status" class="status-bar disconnected">
-            Connecting to Global Cloud...
+            Connecting to Cloud...
         </div>
 
-        <div class="card">
-            <h3>Connected Devices (Live)</h3>
-            <div id="devices-container">
-                <div class="empty-state">Waiting for devices to connect...</div>
+        <div id="devices-container">
+            <div class="device-card">
+                <div class="empty-state">Waiting for engine instances to connect...</div>
             </div>
         </div>
     </div>
 
     <script>
-        const clientId = 'admin_board_' + Math.random().toString(16).substr(2, 8);
+        const clientId = 'web_remote_' + Math.random().toString(16).substr(2, 8);
         const host = 'wss://broker.hivemq.com:8884/mqtt';
         
         const options = {
@@ -78,13 +232,13 @@
         const client = mqtt.connect(host, options);
 
         client.on('connect', function () {
-            statusEl.textContent = '● Connected to Global Cloud (Ready)';
+            statusEl.textContent = '● CLOUD CONNECTED';
             statusEl.className = 'status-bar connected';
             client.subscribe('aml_lab_2026/audiodenoiser/state/+', { qos: 1 });
         });
 
         client.on('error', function (err) {
-            statusEl.textContent = '● Network Error';
+            statusEl.textContent = '● NETWORK DISCONNECTED';
             statusEl.className = 'status-bar disconnected';
         });
 
@@ -102,8 +256,10 @@
                 } else {
                     activeDevices[deviceId] = {
                         role: payload.role || "Custom",
-                        denoise_on: payload.denoise,
-                        isolate_on: payload.isolate
+                        denoise_on: payload.denoise || false,
+                        isolate_on: payload.isolate || false,
+                        cocktail_on: payload.cocktail || false,
+                        gain: payload.gain || 0
                     };
                     renderDevices();
                 }
@@ -117,50 +273,93 @@
             
             const deviceIds = Object.keys(activeDevices);
             if (deviceIds.length === 0) {
-                container.innerHTML = '<div class="empty-state">Waiting for devices to connect...</div>';
+                container.innerHTML = '<div class="device-card"><div class="empty-state">Waiting for engine instances to connect...</div></div>';
                 return;
             }
 
             deviceIds.forEach(id => {
                 const dev = activeDevices[id];
                 
-                const onClass = dev.denoise_on ? 'btn-on active' : 'btn-on';
-                const offClass = !dev.denoise_on ? 'btn-off active' : 'btn-off';
-                const isoClass = dev.isolate_on ? 'btn-iso active' : 'btn-iso';
+                // System Master
+                const masterClass = dev.denoise_on ? 'master-btn on' : 'master-btn off';
+                const masterText = dev.denoise_on ? 'SYSTEM MASTER (ON)' : 'SYSTEM MASTER (OFF)';
                 
-                // Helper to render 'selected' attribute
+                // Mode logic
+                const modeIsolate = dev.isolate_on && !dev.cocktail_on;
+                const modeCocktail = dev.cocktail_on && !dev.isolate_on;
+                const modeBypass = !dev.isolate_on && !dev.cocktail_on;
+
+                const cByp = modeBypass ? 'active' : '';
+                const cIso = modeIsolate ? 'active' : '';
+                const cCtx = modeCocktail ? 'active' : '';
+                
                 const sel = (val) => dev.role === val ? 'selected' : '';
                 
-                const row = document.createElement('div');
-                row.className = 'device-row';
-                row.innerHTML = `
-                    <div class="device-info">
-                        <span class="device-id">DEVICE: ${id.toUpperCase()}</span>
-                        <select class="profile-select" onchange="sendCommand('${id}', 'profile', this.value)">
+                const card = document.createElement('div');
+                card.className = 'device-card';
+                card.innerHTML = `
+                    <div class="device-header">
+                        <div class="device-id">ID: ${id.toUpperCase()}</div>
+                        <div class="live-badge">LIVE</div>
+                    </div>
+                    
+                    <div class="control-group">
+                        <button class="${masterClass}" onclick="sendCommand('${id}', 'denoise', ${!dev.denoise_on})">
+                            ${masterText}
+                        </button>
+                    </div>
+
+                    <div class="control-group">
+                        <span class="control-label">Neural Extraction Mode</span>
+                        <div class="segmented-control">
+                            <button class="seg-btn ${cByp}" onclick="setMode('${id}', 'bypass')">BYPASS</button>
+                            <button class="seg-btn ${cIso}" onclick="setMode('${id}', 'isolate')">ZERO-LAT GATE</button>
+                            <button class="seg-btn ${cCtx}" onclick="setMode('${id}', 'cocktail')">DEEP EXTRACT</button>
+                        </div>
+                    </div>
+                    
+                    <div class="control-group">
+                        <span class="control-label">Output Gain Boost</span>
+                        <div class="slider-row">
+                            <input type="range" min="-24" max="48" value="${dev.gain}" 
+                                   onchange="sendCommand('${id}', 'gain', parseFloat(this.value))"
+                                   oninput="this.nextElementSibling.innerText = (this.value > 0 ? '+' : '') + this.value + ' dB'">
+                            <div class="slider-val">${dev.gain > 0 ? '+' : ''}${dev.gain} dB</div>
+                        </div>
+                    </div>
+
+                    <div class="control-group">
+                        <span class="control-label">Environment Profile</span>
+                        <select onchange="sendCommand('${id}', 'profile', this.value)">
                             <option value="Custom" ${sel('Custom')}>Custom Profile</option>
                             <option value="Traffic (Max Suppression)" ${sel('Traffic (Max Suppression)')}>Traffic (Max Suppression)</option>
                             <option value="Classroom (Babble Control)" ${sel('Classroom (Babble Control)')}>Classroom (Babble Control)</option>
                             <option value="Home (Natural Mix)" ${sel('Home (Natural Mix)')}>Home (Natural Mix)</option>
                         </select>
                     </div>
-                    <div class="controls">
-                        <button class="btn ${onClass}" onclick="sendCommand('${id}', 'denoise', true)">Denoise ON</button>
-                        <button class="btn ${offClass}" onclick="sendCommand('${id}', 'denoise', false)">Denoise OFF</button>
-                        <button class="btn ${isoClass}" onclick="sendCommand('${id}', 'isolate', ${!dev.isolate_on})">Voice Isolate</button>
-                    </div>
                 `;
-                container.appendChild(row);
+                container.appendChild(card);
             });
         }
 
         window.sendCommand = function(deviceId, action, state) {
-            if (!client.connected) {
-                alert("Cannot send command: Not connected to cloud.");
-                return;
-            }
+            if (!client.connected) return;
             const topic = `aml_lab_2026/audiodenoiser/command/${deviceId}`;
             const payload = JSON.stringify({ action: action, state: state });
             client.publish(topic, payload, { qos: 1 });
+        };
+        
+        window.setMode = function(deviceId, mode) {
+            if (mode === 'bypass') {
+                sendCommand(deviceId, 'isolate', false);
+                setTimeout(() => sendCommand(deviceId, 'cocktail', false), 100);
+            } else if (mode === 'isolate') {
+                sendCommand(deviceId, 'cocktail', false);
+                setTimeout(() => sendCommand(deviceId, 'isolate', true), 100);
+            } else if (mode === 'cocktail') {
+                sendCommand(deviceId, 'isolate', false);
+                setTimeout(() => sendCommand(deviceId, 'cocktail', true), 100);
+            }
         };
     </script>
 </body>

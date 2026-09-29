@@ -42,14 +42,16 @@ class RemoteController:
         self.client.loop_stop()
         self.client.disconnect()
 
-    def publish_state(self, role, denoise_on, isolate_on):
+    def publish_state(self, role, denoise_on, isolate_on, cocktail_on, gain):
         """Broadcasts the current state of the app to the cloud using Retained Messages."""
         payload = json.dumps({
             "device_id": self.device_id,
             "role": role,
             "status": "online",
             "denoise": denoise_on,
-            "isolate": isolate_on
+            "isolate": isolate_on,
+            "cocktail": cocktail_on,
+            "gain": gain
         })
         # retain=True tells the cloud to save this message for late-joiner Admins!
         self.client.publish(self.state_topic, payload=payload, qos=1, retain=True)

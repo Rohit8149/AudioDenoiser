@@ -549,7 +549,7 @@ class AudioDenoiserApp:
         p = self.params["live"]
         _slider(cur_row, "mix", "Dry / Wet Mix", 0, 100, p["mix"], lambda v: f"{round(v)} %")
         cur_row += 1
-        _slider(cur_row, "gain", "Output Gain", -12, 12, p["gain"], lambda v: f"{round(v):+d} dB")
+        _slider(cur_row, "gain", "Output Gain", -24, 48, p["gain"], lambda v: f"{round(v):+d} dB")
         cur_row += 1
         _slider(cur_row, "hpf", "High-Pass Filter", 0, 400, p["hpf"], lambda v: "off" if round(v / 20) * 20 < 20 else f"{round(v / 20) * 20} Hz")
         cur_row += 1
@@ -613,9 +613,11 @@ class AudioDenoiserApp:
     def _broadcast_state(self):
         if getattr(self, "remote_controller", None) is not None:
             self.remote_controller.publish_state(
-                role=self.profile_var.get(),
+                role=self.profile_var.get() if hasattr(self, "profile_var") else "Custom",
                 denoise_on=(self.mode == "denoise"),
-                isolate_on=self.isolate_var.get()
+                isolate_on=self.isolate_var.get(),
+                cocktail_on=self.live_cocktail_var.get(),
+                gain=self.params["live"]["gain"]
             )
 
     def _on_mqtt_command(self, action, state):
@@ -637,8 +639,35 @@ class AudioDenoiserApp:
             if current != state:
                 self.isolate_var.set(state)
                 self._toggle_isolate()
+                if state:
+                    self.mode_seg.set("ZERO-LAT GATE")
+                    self.mode_desc.configure(text="Blocks background noise instantly.", text_color=TEXT_PRIMARY)
+                elif not self.live_cocktail_var.get():
+                    self.mode_seg.set("BYPASS")
+                    self.mode_desc.configure(text="No speaker isolation active.", text_color=TEXT_DIM)
+        elif action == "cocktail":
+            current = self.live_cocktail_var.get()
+            if current != state:
+                self.live_cocktail_var.set(state)
+                self._toggle_cocktail()
+                if state:
+                    self.mode_seg.set("DEEP EXTRACT")
+                    self.mode_desc.configure(text="High-quality extraction (adds latency).", text_color=TEXT_PRIMARY)
+                elif not self.isolate_var.get():
+                    self.mode_seg.set("BYPASS")
+                    self.mode_desc.configure(text="No speaker isolation active.", text_color=TEXT_DIM)
+        elif action == "gain":
+            v = float(state)
+            self.params["live"]["gain"] = v
+            if hasattr(self, "fx_lbls_live") and "gain" in self.fx_lbls_live:
+                var, lbl, fmt = self.fx_lbls_live["gain"]
+                var.set(v)
+                lbl.configure(text=fmt(v))
+            if self.mode == "denoise":
+                self.dn.set_output_gain(v)
+            self._broadcast_state()
         elif action == "profile":
-            current = self.profile_var.get()
+            current = self.profile_var.get() if hasattr(self, "profile_var") else "Custom"
             if current != state and hasattr(self, "profile_var"):
                 self.profile_var.set(state)
                 self._on_profile_change(state)
