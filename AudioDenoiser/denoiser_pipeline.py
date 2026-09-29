@@ -480,7 +480,7 @@ class StreamingDenoiser:
             if getattr(self, "_gate_gain", None) is None:
                 self._gate_gain = 1.0
                 
-            target_gain = 1.0 if self._sv_score > 0.28 else 0.001
+            target_gain = 1.0 if self._sv_score >= self.biometric_threshold else 0.001
             
             if target_gain > self._gate_gain:
                 self._gate_gain = target_gain # Attack instantly (open mic immediately when you speak)
