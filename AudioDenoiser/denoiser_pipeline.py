@@ -297,7 +297,7 @@ class StreamingDenoiser:
                 # Use same FFT settings as DeepFilterNet (48kHz)
                 window = torch.hann_window(960)
                 stft_res = torch.stft(block_t, n_fft=960, hop_length=480, window=window, return_complex=True)
-                mag = torch.abs(stft_res).numpy()
+                mag = torch.abs(stft_res).numpy() / 480.0  # Normalize to match DFN dB scale
             
             def push(hist, mag_db):
                 col = mag_db[:, None].astype(np.float32)

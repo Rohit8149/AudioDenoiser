@@ -1482,7 +1482,7 @@ class AudioDenoiserApp:
         else:
             g["uptime"].configure(text="—")
 
-    def _render_hist(self, hist) -> Image.Image:
+    def _render_hist(self, hist, is_enh) -> Image.Image:
         if hist is None or hist.shape[1] < 2:
             return Image.new("RGB", (IMG_W, IMG_H), "black")
         arr = hist[:, -HIST_FRAMES:]
@@ -1497,15 +1497,18 @@ class AudioDenoiserApp:
         ceiling = float(np.percentile(arr, 99.8))
         if ceiling < -90.0:
             ceiling = -30.0  
-        if not hasattr(self, "_spec_vmax"):
-            self._spec_vmax = ceiling
+        vmax_attr = "_spec_vmax_enh" if is_enh else "_spec_vmax_noisy"
+        if not hasattr(self, vmax_attr):
+            setattr(self, vmax_attr, ceiling)
         
         # Medium speed tracking
-        self._spec_vmax = 0.95 * self._spec_vmax + 0.05 * max(ceiling, -50.0)
+        curr_vmax = getattr(self, vmax_attr)
+        new_vmax = 0.95 * curr_vmax + 0.05 * max(ceiling, -50.0)
+        setattr(self, vmax_attr, new_vmax)
         
         # 3. HIGH CONTRAST COLORS: Tight 45dB range. 
         # We intentionally offset the math so the voice clips into the brightest yellow and orange colors!
-        norm = np.clip((arr - (self._spec_vmax - 50)) / 45.0, 0, 1)
+        norm = np.clip((arr - (new_vmax - 50)) / 45.0, 0, 1)
         rgb = MAGMA[(norm * 255).astype(np.uint8)]    # [rows, T, 3]
         return Image.fromarray(rgb).resize((IMG_W, IMG_H), Image.BILINEAR)
 
@@ -1530,7 +1533,7 @@ class AudioDenoiserApp:
                 hist = self.dn.enh_hist if is_enh else self.dn.spec_hist
                 if hist is None:
                     continue
-                img = self._render_hist(hist)
+                img = self._render_hist(hist, is_enh)
                 
             photo = ImageTk.PhotoImage(img)
             lbl.configure(image=photo, width=IMG_W, height=IMG_H)
