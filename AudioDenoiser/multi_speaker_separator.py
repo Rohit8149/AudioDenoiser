@@ -9,11 +9,11 @@ class MultiSpeakerSeparator:
     def __init__(self, device="cuda"):
         self.device = device
         
-        # 1. Load the SepFormer Separation Model
-        print("[SepFormer] Loading Cocktail Party Separation Model...")
+        # 1. Load the SepFormer 16kHz Separation Model
+        print("[SepFormer] Loading 16kHz Cocktail Party Separation Model...")
         self.separator = SepformerSeparation.from_hparams(
-            source="speechbrain/sepformer-wsj02mix",
-            savedir="pretrained_models/sepformer-wsj02mix",
+            source="speechbrain/sepformer-whamr16k",
+            savedir="pretrained_models/sepformer-whamr16k",
             run_opts={"device": device}
         )
         
@@ -34,32 +34,30 @@ class MultiSpeakerSeparator:
         mixed_sig, sr = torchaudio.load(mixed_audio_path)
         mixed_sig = mixed_sig.mean(dim=0, keepdim=True)  # Force mono
         
-        # SepFormer wsj02mix processes at exactly 8000 Hz
-        if sr != 8000:
-            resampler_8k = torchaudio.transforms.Resample(orig_freq=sr, new_freq=8000)
-            mixed_sig_8k = resampler_8k(mixed_sig)
+        # New Model processes at exactly 16000 Hz
+        if sr != 16000:
+            resampler_16k = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)
+            mixed_sig_16k = resampler_16k(mixed_sig)
         else:
-            mixed_sig_8k = mixed_sig
+            mixed_sig_16k = mixed_sig
             
-        chunk_samples = int(chunk_duration_sec * 8000)
-        total_samples = mixed_sig_8k.shape[1]
+        chunk_samples = int(chunk_duration_sec * 16000)
+        total_samples = mixed_sig_16k.shape[1]
         
-        final_audio_8k = []
+        final_audio_16k = []
         
         chunks_count = (total_samples + chunk_samples - 1) // chunk_samples
-        
-        resampler_16k_up = torchaudio.transforms.Resample(orig_freq=8000, new_freq=16000)
         
         for i, start in enumerate(range(0, total_samples, chunk_samples)):
             if progress_callback:
                 progress_callback(i / chunks_count)
                 
             end = min(start + chunk_samples, total_samples)
-            chunk = mixed_sig_8k[:, start:end]
+            chunk = mixed_sig_16k[:, start:end]
             
             # Skip tiny micro-chunks at the end of the file
-            if chunk.shape[1] < 800: 
-                final_audio_8k.append(chunk.squeeze(0))
+            if chunk.shape[1] < 1600: 
+                final_audio_16k.append(chunk.squeeze(0))
                 continue
             
             chunk = chunk.to(self.device)
@@ -72,12 +70,9 @@ class MultiSpeakerSeparator:
             src1 = est_sources[0, :, 0].unsqueeze(0).cpu() # [1, time]
             src2 = est_sources[0, :, 1].unsqueeze(0).cpu()
             
-            # Step B: Biometric Verification (ECAPA-TDNN needs 16kHz)
-            src1_16k = resampler_16k_up(src1)
-            src2_16k = resampler_16k_up(src2)
-            
-            score1 = self.verifier.verify_frame(src1_16k.numpy().flatten(), fs_in=16000)
-            score2 = self.verifier.verify_frame(src2_16k.numpy().flatten(), fs_in=16000)
+            # Step B: Biometric Verification (ECAPA-TDNN natively uses 16kHz, so no resampling needed!)
+            score1 = self.verifier.verify_frame(src1.numpy().flatten(), fs_in=16000)
+            score2 = self.verifier.verify_frame(src2.numpy().flatten(), fs_in=16000)
             
             # Step C: Select the track that matches the user
             if score1 > score2:
@@ -87,22 +82,33 @@ class MultiSpeakerSeparator:
                 winning_src = src2
                 max_score = score2
                 
-            # Step D: Gate. If neither track matches the user, mute.
-            if max_score < 0.20:
-                winning_src = torch.zeros_like(src1)
+            print(f"\n[Offline Cocktail] Chunk {i+1} | Track 1: {score1*100:.1f}% | Track 2: {score2*100:.1f}%")
+            if max_score >= 0.25:
+                print(f" -> PASSED: Identity matched with {max_score*100:.1f}%.")
+            else:
+                print(f" -> BLOCKED: Highest similarity ({max_score*100:.1f}%) is below 25.0%.")
                 
-            final_audio_8k.append(winning_src.squeeze(0))
+            # Step D: Gate. Threshold set to 0.25 to securely block YouTube without rejecting you
+            if max_score < 0.25:
+                winning_src = torch.zeros_like(src1)
+            else:
+                # Restore natural volume! (SepFormer aggressively amplifies quiet audio)
+                orig_rms = torch.sqrt(torch.mean(chunk.cpu()**2))
+                est_rms = torch.sqrt(torch.mean(winning_src**2))
+                if est_rms > 0.0001:
+                    winning_src = winning_src * (orig_rms / est_rms)
+                
+            final_audio_16k.append(winning_src.squeeze(0))
             
         # Stitch all the chunks back together
-        stitched_8k = torch.cat(final_audio_8k, dim=0).unsqueeze(0)
+        stitched_16k = torch.cat(final_audio_16k, dim=0).unsqueeze(0)
 
-        
-        # Resample back up to 48000 Hz for the rest of the pipeline
-        if sr != 8000:
-            resampler_orig = torchaudio.transforms.Resample(orig_freq=8000, new_freq=sr)
-            final_audio = resampler_orig(stitched_8k)
+        # Resample back up to original SR (48000) for the rest of the pipeline
+        if sr != 16000:
+            resampler_orig = torchaudio.transforms.Resample(orig_freq=16000, new_freq=sr)
+            final_audio = resampler_orig(stitched_16k)
         else:
-            final_audio = stitched_8k
+            final_audio = stitched_16k
             
         return final_audio, sr
 
@@ -110,25 +116,22 @@ class MultiSpeakerSeparator:
         """Processes a raw 1D numpy array in memory (for live streaming)."""
         mixed_sig = torch.from_numpy(audio_np).unsqueeze(0).float()
         
-        if sr != 8000:
-            resampler_8k = torchaudio.transforms.Resample(orig_freq=sr, new_freq=8000)
-            mixed_sig_8k = resampler_8k(mixed_sig)
+        if sr != 16000:
+            resampler_16k = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)
+            mixed_sig_16k = resampler_16k(mixed_sig)
         else:
-            mixed_sig_8k = mixed_sig
+            mixed_sig_16k = mixed_sig
             
-        chunk = mixed_sig_8k.to(self.device)
+        chunk = mixed_sig_16k.to(self.device)
         with torch.no_grad():
             est_sources = self.separator.separate_batch(chunk)
             
         src1 = est_sources[0, :, 0].unsqueeze(0).cpu()
         src2 = est_sources[0, :, 1].unsqueeze(0).cpu()
         
-        resampler_16k_up = torchaudio.transforms.Resample(orig_freq=8000, new_freq=16000)
-        src1_16k = resampler_16k_up(src1)
-        src2_16k = resampler_16k_up(src2)
-        
-        score1 = self.verifier.verify_frame(src1_16k.numpy().flatten(), fs_in=16000)
-        score2 = self.verifier.verify_frame(src2_16k.numpy().flatten(), fs_in=16000)
+        # ECAPA-TDNN expects 16kHz, which matches our new SepFormer perfectly!
+        score1 = self.verifier.verify_frame(src1.numpy().flatten(), fs_in=16000)
+        score2 = self.verifier.verify_frame(src2.numpy().flatten(), fs_in=16000)
         
         if score1 > score2:
             winning_src = src1
@@ -137,11 +140,26 @@ class MultiSpeakerSeparator:
             winning_src = src2
             max_score = score2
             
-        if max_score < 0.20:
-            winning_src = torch.zeros_like(src1)
+        # --- Live Diagnostics for the Terminal ---
+        print(f"\n[Cocktail Mode] Biometric Similarity | Track 1: {score1*100:.1f}% | Track 2: {score2*100:.1f}%")
+        if max_score >= 0.25:
+            print(f" -> PASSED: Your voice was identified on Track {1 if score1 > score2 else 2} with {max_score*100:.1f}% match.")
+        else:
+            print(f" -> BLOCKED: VIP Gate failed. Highest match was {max_score*100:.1f}%. (Threshold is 25.0%).")
+        # -----------------------------------------
             
-        if sr != 8000:
-            resampler_orig = torchaudio.transforms.Resample(orig_freq=8000, new_freq=sr)
+        # Raised threshold to 0.25! (0.40 was too strict and rejected the legitimate user)
+        if max_score < 0.25:
+            winning_src = torch.zeros_like(src1)
+        else:
+            # Restore natural volume! (SepFormer aggressively amplifies quiet audio)
+            orig_rms = torch.sqrt(torch.mean(chunk.cpu()**2))
+            est_rms = torch.sqrt(torch.mean(winning_src**2))
+            if est_rms > 0.0001:
+                winning_src = winning_src * (orig_rms / est_rms)
+            
+        if sr != 16000:
+            resampler_orig = torchaudio.transforms.Resample(orig_freq=16000, new_freq=sr)
             final_audio = resampler_orig(winning_src)
         else:
             final_audio = winning_src

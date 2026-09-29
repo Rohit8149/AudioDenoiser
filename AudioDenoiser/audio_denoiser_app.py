@@ -388,7 +388,7 @@ class AudioDenoiserApp:
         
         self.enroll_prompt = ctk.CTkLabel(
             info_frm, 
-            text="Record a 5-second sample to isolate your voice and cancel out background talking.",
+            text="Record a 15-second voice sample in a quiet room to generate your Biometric Centroid Vector.",
             font=ctk.CTkFont(size=11), text_color=COLOR_DIM, justify="left", wraplength=350)
         self.enroll_prompt.pack(side="left")
 
@@ -400,11 +400,27 @@ class AudioDenoiserApp:
                 
     def _toggle_cocktail(self):
         if self.dn is not None:
-            try:
-                self.dn.set_cocktail_mode(self.live_cocktail_var.get())
-            except Exception as e:
-                log(f"Failed to load cocktail mode: {e!r}")
-                self.live_cocktail_var.set(False)
+            enabled = self.live_cocktail_var.get()
+            if enabled:
+                self.live_cocktail_switch.configure(text="Loading Cocktail AI...", state="disabled")
+                self.tip_lbl.configure(text="⏳ Loading massive SepFormer AI into memory (takes a few secs)...", text_color="yellow")
+                self.root.update_idletasks()
+                
+                def load_task():
+                    try:
+                        self.dn.set_cocktail_mode(True)
+                        self.root.after(0, lambda: self.live_cocktail_switch.configure(text="Cocktail Party Separation (3s Delay)", state="normal"))
+                        self.root.after(0, lambda: self.tip_lbl.configure(text="✅ Cocktail AI Active! (Expect 3s audio delay)", text_color=COLOR_ON))
+                    except Exception as e:
+                        log(f"Failed to load cocktail mode: {e!r}")
+                        self.root.after(0, lambda: self.live_cocktail_var.set(False))
+                        self.root.after(0, lambda: self.live_cocktail_switch.configure(text="Cocktail Party Separation (3s Delay)", state="normal"))
+                
+                import threading
+                threading.Thread(target=load_task, daemon=True).start()
+            else:
+                self.dn.set_cocktail_mode(False)
+                self.tip_lbl.configure(text="Cocktail Mode OFF. Standard Denoising Active.", text_color=COLOR_ON)
 
     def _play_voice(self):
         profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
@@ -438,31 +454,114 @@ class AudioDenoiserApp:
         try:
             dev_in = int(self.in_dev.get().split(":")[0])
         except (ValueError, IndexError):
-            self.enroll_prompt.configure(text="⚠️ Please select a microphone first!")
+            self.enroll_prompt.configure(text="❌ Please select a microphone first!")
             return
 
         self.enroll_btn.configure(state="disabled")
         self.play_voice_btn.configure(state="disabled")
-        self.enroll_prompt.configure(
-            text="🔴 RECORDING (5s): Please read aloud -> 'The quick brown fox jumps over the lazy dog. I am authenticating my voice.'",
-            text_color="orange"
-        )
+        self.enroll_prompt.configure(text="🔴 RECORDING (20s)...", text_color="orange")
         
+        abort_flag = [False]
+        
+        # --- Teleprompter Overlay ---
+        prompt_win = ctk.CTkToplevel(self.root)
+        
+        def on_close_prompt():
+            abort_flag[0] = True
+            import sounddevice as sd
+            sd.stop()
+            prompt_win.destroy()
+            self.enroll_prompt.configure(text="❌ Enrollment aborted by user.", text_color="#FF4444")
+            self.enroll_btn.configure(state="normal", text="🔄 Re-enroll Voice")
+            if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")):
+                self.play_voice_btn.configure(state="normal")
+                self.isolate_switch.configure(state="normal")
+
+        prompt_win.protocol("WM_DELETE_WINDOW", on_close_prompt)
+        prompt_win.title("Voice Enrollment")
+        prompt_win.geometry("500x350")
+        prompt_win.attributes("-topmost", True)
+        prompt_win.geometry(f"+{self.root.winfo_x() + 100}+{self.root.winfo_y() + 50}")
+        
+        lbl_title = ctk.CTkLabel(prompt_win, text="🔴 RECORDING IN PROGRESS", text_color="#FF4444", font=ctk.CTkFont(size=20, weight="bold"))
+        lbl_title.pack(pady=(20, 10))
+        
+        script_text = (
+            "Please read the following text in your normal voice:\n\n"
+            "\"Hello! I am recording my voice to create a biometric profile for my Advanced Machine Learning project. "
+            "The system is currently mapping the unique frequencies of my vocal cords. "
+            "Once I finish reading this paragraph, the AI will use this recording to mathematically separate my voice from any other people talking in the background. "
+            "This is a live test of the Cocktail Party separation system!\""
+        )
+        lbl_script = ctk.CTkLabel(prompt_win, text=script_text, font=ctk.CTkFont(size=15), wraplength=450, justify="center")
+        lbl_script.pack(pady=10, padx=20)
+        
+        lbl_timer = ctk.CTkLabel(prompt_win, text="20 seconds remaining...", font=ctk.CTkFont(size=18, weight="bold"))
+        lbl_timer.pack(pady=(20, 20))
+        
+        def update_timer(secs):
+            if not prompt_win.winfo_exists():
+                return
+            if secs > 0:
+                lbl_timer.configure(text=f"{secs} seconds remaining...")
+                self.root.after(1000, update_timer, secs - 1)
+            else:
+                lbl_timer.configure(text="Purifying audio (DeepFilterNet)...", text_color="yellow")
+        
+        update_timer(20)
+        # ----------------------------
+
         def record_task():
             try:
                 import soundfile as sf
-                # Record 5 seconds at 48000 Hz
-                audio = sd.rec(int(5 * 48000), samplerate=48000, channels=1, device=dev_in, dtype='float32')
+                audio = sd.rec(int(20 * 48000), samplerate=48000, channels=1, device=dev_in, dtype='float32')
                 sd.wait()
                 
-                profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
-                sf.write(profile_path, audio, 48000)
+                if abort_flag[0]:
+                    return  # User closed the window, abort the save process completely
                 
-                self.enroll_prompt.configure(
-                    text="✅ Voice Print saved! The AI will now use this to filter out other voices.",
-                    text_color=COLOR_ON
-                )
-                self.enroll_btn.configure(text="🎙️ Re-enroll Voice")
+                profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
+                temp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile_raw.wav")
+                
+                # Save the raw noisy mic recording
+                sf.write(temp_path, audio, 48000)
+                
+                self.enroll_prompt.configure(text="🧹 Purifying voice print using DeepFilterNet...", text_color="yellow")
+                if prompt_win.winfo_exists():
+                    prompt_win.destroy()
+                
+                # Denoise the profile offline before ECAPA sees it!
+                if self.dn is not None:
+                    self.dn.denoise_file(temp_path, profile_path)
+                else:
+                    sf.write(profile_path, audio, 48000)
+                    
+                # --- Smart Silence Trimming (Voice Activity Detection) ---
+                import numpy as np
+                clean_audio, sr = sf.read(profile_path)
+                
+                # Find the first moment of actual speech (skipping up to 5 seconds of silence)
+                threshold = 0.01  # RMS threshold
+                window = int(sr * 0.1) # 100ms
+                start_idx = 0
+                # Ignore first 0.4 seconds to bypass DeepFilterNet startup clicks
+                for i in range(int(sr * 0.4), len(clean_audio), window):
+                    chunk = clean_audio[i:i+window]
+                    if np.sqrt(np.mean(chunk**2)) > threshold:
+                        start_idx = max(0, i - int(sr * 0.15)) # 150ms pre-roll to keep breath/start of word
+                        break
+                        
+                # Crop EXACTLY 15 seconds starting from the first spoken word!
+                end_idx = min(len(clean_audio), start_idx + int(15 * sr))
+                final_15s_audio = clean_audio[start_idx:end_idx]
+                sf.write(profile_path, final_15s_audio, sr)
+                # ---------------------------------------------------------
+                
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                
+                self.enroll_prompt.configure(text="✅ Voice Print saved! The AI will now use this to filter out other voices.", text_color=COLOR_ON)
+                self.enroll_btn.configure(text="🔄 Re-enroll Voice")
             except Exception as e:
                 self.enroll_prompt.configure(text=f"❌ Error recording: {e}", text_color=COLOR_OFF)
             finally:
@@ -470,6 +569,7 @@ class AudioDenoiserApp:
                 if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")):
                     self.play_voice_btn.configure(state="normal")
                     self.isolate_switch.configure(state="normal")
+                
                 
         threading.Thread(target=record_task, daemon=True).start()
 
