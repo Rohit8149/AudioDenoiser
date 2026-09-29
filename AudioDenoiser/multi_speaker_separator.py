@@ -83,13 +83,13 @@ class MultiSpeakerSeparator:
                 max_score = score2
                 
             print(f"\n[Offline Cocktail] Chunk {i+1} | Track 1: {score1*100:.1f}% | Track 2: {score2*100:.1f}%")
-            if max_score >= 0.25:
+            if max_score >= threshold:
                 print(f" -> PASSED: Identity matched with {max_score*100:.1f}%.")
             else:
                 print(f" -> BLOCKED: Highest similarity ({max_score*100:.1f}%) is below 25.0%.")
                 
             # Step D: Gate. Threshold set to 0.25 to securely block YouTube without rejecting you
-            if max_score < 0.25:
+            if max_score < threshold:
                 winning_src = torch.zeros_like(src1)
             else:
                 # Restore natural volume! (SepFormer aggressively amplifies quiet audio)
@@ -142,14 +142,14 @@ class MultiSpeakerSeparator:
             
         # --- Live Diagnostics for the Terminal ---
         print(f"\n[Cocktail Mode] Biometric Similarity | Track 1: {score1*100:.1f}% | Track 2: {score2*100:.1f}%")
-        if max_score >= 0.25:
+        if max_score >= threshold:
             print(f" -> PASSED: Your voice was identified on Track {1 if score1 > score2 else 2} with {max_score*100:.1f}% match.")
         else:
-            print(f" -> BLOCKED: VIP Gate failed. Highest match was {max_score*100:.1f}%. (Threshold is 25.0%).")
+            print(f" -> BLOCKED: VIP Gate failed. Highest match was {max_score*100:.1f}%. (Threshold is {threshold*100:.1f}%).")
         # -----------------------------------------
             
         # Raised threshold to 0.25! (0.40 was too strict and rejected the legitimate user)
-        if max_score < 0.25:
+        if max_score < threshold:
             winning_src = torch.zeros_like(src1)
         else:
             # Restore natural volume! (SepFormer aggressively amplifies quiet audio)
@@ -164,4 +164,4 @@ class MultiSpeakerSeparator:
         else:
             final_audio = winning_src
             
-        return final_audio.squeeze(0).numpy()
+        return final_audio.squeeze(0).numpy(), max_score
