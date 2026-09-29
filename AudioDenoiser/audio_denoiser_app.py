@@ -443,10 +443,10 @@ class AudioDenoiserApp:
         thresh_frm.pack(side="left", padx=(30, 0))
         
         ctk.CTkLabel(thresh_frm, text="Threshold:", font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=5)
-        self.threshold_var = tk.DoubleVar(value=0.25)
+        self.threshold_var = tk.DoubleVar(value=0.20)
         self.threshold_slider = ctk.CTkSlider(thresh_frm, from_=0.05, to=0.80, variable=self.threshold_var, command=self._on_thresh_change, width=120)
         self.threshold_slider.pack(side="left", padx=5)
-        self.thresh_val_lbl = ctk.CTkLabel(thresh_frm, text="25%", font=ctk.CTkFont(size=11))
+        self.thresh_val_lbl = ctk.CTkLabel(thresh_frm, text="20%", font=ctk.CTkFont(size=11))
         self.thresh_val_lbl.pack(side="left")
         
         profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
@@ -508,6 +508,9 @@ class AudioDenoiserApp:
         if self.dn is not None:
             self.dn.isolate_speaker = self.isolate_var.get()
             if self.isolate_var.get():
+                if hasattr(self, "threshold_var"):
+                    self.threshold_var.set(0.20)
+                    self._on_thresh_change(0.20)
                 self.dn.reload_profile()
         self._broadcast_state()
 
@@ -540,6 +543,9 @@ class AudioDenoiserApp:
         if self.dn is not None:
             enabled = self.live_cocktail_var.get()
             if enabled:
+                if hasattr(self, "threshold_var"):
+                    self.threshold_var.set(0.15)
+                    self._on_thresh_change(0.15)
                 self.live_cocktail_switch.configure(text="Loading Cocktail AI...", state="disabled")
                 self.tip_lbl.configure(text="⏳ Loading massive SepFormer AI into memory (takes a few secs)...", text_color="yellow")
                 self.root.update_idletasks()

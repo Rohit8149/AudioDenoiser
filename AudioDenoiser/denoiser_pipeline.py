@@ -90,7 +90,7 @@ class StreamingDenoiser:
         self.mask_floor_db = 100.0  # per-bin max suppression; 100 = unlimited
         self._hpf_zi: np.ndarray | None = None
         self.isolate_speaker = False
-        self.biometric_threshold = 0.25
+        self.biometric_threshold = 0.20
         self._cocktail_score = 0.0
         
         # Initialize SpeakerVerifier in background
