@@ -1489,14 +1489,9 @@ class AudioDenoiserApp:
         # pool 481 frequency bins -> 160 rows (axis 0!)
         rows = 160
         arr = arr[: rows * 3, :].reshape(rows, 3, -1).mean(axis=1)
-        # auto-gain: track a slowly moving ceiling so quiet mics stay visible
-        ceiling = float(np.percentile(arr, 99.8))
-        if ceiling < -90.0:
-            ceiling = -10.0  # Prevent auto-gain from boosting pure artificial silence to maximum brightness
-        if not hasattr(self, "_spec_vmax"):
-            self._spec_vmax = ceiling
-        self._spec_vmax = 0.9 * self._spec_vmax + 0.1 * max(ceiling, -80.0)
-        norm = np.clip((arr - (self._spec_vmax - 60)) / 60.0, 0, 1)
+        # Professional Static Scale: Lock colors permanently.
+        # -75 dBFS is pure black (silence/floor). -15 dBFS is bright yellow (loud speech).
+        norm = np.clip((arr - (-75.0)) / 60.0, 0, 1)
         rgb = MAGMA[(norm * 255).astype(np.uint8)]    # [rows, T, 3]
         return Image.fromarray(rgb).resize((IMG_W, IMG_H), Image.BILINEAR)
 
