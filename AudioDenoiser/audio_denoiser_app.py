@@ -1489,9 +1489,19 @@ class AudioDenoiserApp:
         # pool 481 frequency bins -> 160 rows (axis 0!)
         rows = 160
         arr = arr[: rows * 3, :].reshape(rows, 3, -1).mean(axis=1)
-        # Professional Static Scale: Lock colors permanently.
-        # -75 dBFS is pure black (silence/floor). -15 dBFS is bright yellow (loud speech).
-        norm = np.clip((arr - (-75.0)) / 60.0, 0, 1)
+        # Slow Auto-Gainer: Adapts to quiet microphones, but shifts VERY slowly 
+        # so it doesn't cause distracting color flashes when you speak.
+        ceiling = float(np.percentile(arr, 99.8))
+        if ceiling < -90.0:
+            ceiling = -30.0  
+        if not hasattr(self, "_spec_vmax"):
+            self._spec_vmax = ceiling
+        
+        # 0.99 makes it extremely slow and stable (takes several seconds to shift)
+        self._spec_vmax = 0.99 * self._spec_vmax + 0.01 * max(ceiling, -50.0)
+        
+        # Expanded 80dB dynamic range makes the visuals much smoother and easier to read
+        norm = np.clip((arr - (self._spec_vmax - 80)) / 80.0, 0, 1)
         rgb = MAGMA[(norm * 255).astype(np.uint8)]    # [rows, T, 3]
         return Image.fromarray(rgb).resize((IMG_W, IMG_H), Image.BILINEAR)
 
