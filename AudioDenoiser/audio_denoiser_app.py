@@ -450,6 +450,14 @@ class AudioDenoiserApp:
         )
         self.live_cocktail_switch.pack(side="left", padx=(0, 25))
         
+        self.teams_var = tk.BooleanVar(value=False)
+        self.teams_switch = ctk.CTkSwitch(
+            info_frm, text="Teams Mode (Virtual Cable)",
+            variable=self.teams_var, command=self._toggle_teams,
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.teams_switch.pack(side="left", padx=(0, 25))
+        
         self.enroll_btn = ctk.CTkButton(
             info_frm, text="🎙️ Re-enroll Voice" if has_profile else "🎙️ Enroll My Voice", 
             width=140, height=32,
@@ -478,6 +486,27 @@ class AudioDenoiserApp:
             if self.isolate_var.get():
                 self.dn.reload_profile()
         self._broadcast_state()
+
+    def _toggle_teams(self):
+        is_teams = self.teams_var.get()
+        if is_teams:
+            outs = self.out_dev._values
+            match = [t for t in outs if "CABLE Input" in t or "Virtual" in t]
+            if match:
+                self._prev_out_dev = self.out_dev.get()
+                self.out_dev.set(match[0])
+                self.tip_lbl.configure(text="📞 Teams Mode ON: AI audio is now routed to Virtual Cable.", text_color=COLOR_ON)
+            else:
+                self.teams_var.set(False)
+                self.tip_lbl.configure(text="⚠️ VB-Audio Virtual Cable not found! Please install it.", text_color="red")
+        else:
+            if hasattr(self, "_prev_out_dev"):
+                self.out_dev.set(self._prev_out_dev)
+            self.tip_lbl.configure(text="📞 Teams Mode OFF: Audio routed back to normal speakers.", text_color=COLOR_ON)
+            
+        if self.running:
+            self._stop_all()
+            self.root.after(100, self._start_all)
 
     def _toggle_cocktail(self):
         if self.dn is not None:
