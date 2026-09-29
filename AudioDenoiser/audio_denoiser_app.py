@@ -687,6 +687,7 @@ class AudioDenoiserApp:
                     self._on_thresh_change(0.20)
                 self.dn.reload_profile()
         self._broadcast_state()
+        self._broadcast_state()
 
     def _toggle_teams(self):
         is_teams = self.teams_var.get()
@@ -729,16 +730,19 @@ class AudioDenoiserApp:
                         self.dn.set_cocktail_mode(True)
                         self.root.after(0, lambda: self.live_cocktail_switch.configure(text="Cocktail Party Separation (3s Delay)", state="normal"))
                         self.root.after(0, lambda: self.tip_lbl.configure(text="Cocktail AI Active! (Expect 3s audio delay)", text_color=COLOR_ON))
+                        self.root.after(0, self._broadcast_state)
                     except Exception as e:
                         log(f"Failed to load cocktail mode: {e!r}")
                         self.root.after(0, lambda: self.live_cocktail_var.set(False))
                         self.root.after(0, lambda: self.live_cocktail_switch.configure(text="Cocktail Party Separation (3s Delay)", state="normal"))
+                        self.root.after(0, self._broadcast_state)
                 
                 import threading
                 threading.Thread(target=load_task, daemon=True).start()
             else:
                 self.dn.set_cocktail_mode(False)
                 self.tip_lbl.configure(text="Cocktail Mode OFF. Standard Denoising Active.", text_color=COLOR_ON)
+                self._broadcast_state()
 
     def _play_voice(self):
         profile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speaker_profile.wav")
@@ -1022,6 +1026,7 @@ class AudioDenoiserApp:
             lbl.configure(text=fmt(v))
             if self.mode == "denoise":
                 self.dn.set_output_gain(v)
+            self._broadcast_state()
         elif name == "hpf":
             v = round(float(raw) / 20) * 20
             lbl.configure(text=fmt(v))
