@@ -1081,7 +1081,7 @@ class AudioDenoiserApp:
 
     def _ensure_denoiser(self):
         """Rebuild the denoiser if the post-filter option changed."""
-        pf = bool(self.pf_var.get())
+        pf = bool(self.pf_var.get()) if hasattr(self, "pf_var") else self.pf
         if self.pf == pf:
             return
         self.tip_lbl.configure(text="⏳  Reloading model…", text_color=COLOR_ACCENT)
