@@ -194,6 +194,7 @@ class AudioDenoiserApp:
         self.remote_controller = None
         self.out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
         self._file_busy = False
+        self.profile_var = tk.StringVar(value="Custom")
 
         # ── build UI, then load model ────────────────────────────────────
         self._build_ui()
@@ -961,6 +962,61 @@ class AudioDenoiserApp:
 
     def _on_profile_change(self, choice: str):
         if choice == "Custom":
+            self._broadcast_state()
+            return
+        
+        # Define the presets: (atten, mix, gain, hpf, floor, post_filter)
+        presets = {
+            "Traffic (Heavy Noise)": (100, 100, 12, 160, 100, False),
+            "Classroom (People Talking)": (100, 100, 12, 100, 100, True),
+            "Home (Normal)": (60, 95, 12, 60, 40, False)
+        }
+        
+        if choice in presets:
+            atten, mix, gain, hpf, floor, pf = presets[choice]
+            
+            self._suppress_custom = True
+            
+            # Update internal params
+            self.params["live"]["atten"] = atten
+            self.params["live"]["mix"] = mix
+            self.params["live"]["gain"] = gain
+            self.params["live"]["hpf"] = hpf
+            self.params["live"]["floor"] = floor
+            self.pf = pf
+            
+            # Update Sliders if they exist
+            if hasattr(self, "atten_var"):
+                self.atten_var.set(atten)
+                self.atten_lbl.configure(text=f"{atten} dB")
+            
+            if hasattr(self, "fx_lbls_live"):
+                if "mix" in self.fx_lbls_live:
+                    self.fx_lbls_live["mix"][0].set(mix)
+                    self.fx_lbls_live["mix"][1].configure(text=self.fx_lbls_live["mix"][2](mix))
+                if "gain" in self.fx_lbls_live:
+                    self.fx_lbls_live["gain"][0].set(gain)
+                    self.fx_lbls_live["gain"][1].configure(text=self.fx_lbls_live["gain"][2](gain))
+                if "hpf" in self.fx_lbls_live:
+                    self.fx_lbls_live["hpf"][0].set(hpf)
+                    self.fx_lbls_live["hpf"][1].configure(text=self.fx_lbls_live["hpf"][2](hpf))
+                if "floor" in self.fx_lbls_live:
+                    self.fx_lbls_live["floor"][0].set(floor)
+                    self.fx_lbls_live["floor"][1].configure(text=self.fx_lbls_live["floor"][2](floor))
+                    
+            if hasattr(self, "pf_var"):
+                self.pf_var.set(pf)
+                
+            # Apply to engine
+            if self.mode == "denoise" and self.dn is not None:
+                self.dn.set_atten_lim(atten)
+                self.dn.set_mix(mix / 100.0)
+                self.dn.set_output_gain(gain)
+                self.dn.set_highpass(hpf)
+                self.dn.set_noise_floor(floor)
+                self.dn.pf = pf
+                
+            self.root.after(100, lambda: setattr(self, "_suppress_custom", False))
             self._broadcast_state()
             return
         
