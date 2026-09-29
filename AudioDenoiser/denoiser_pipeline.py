@@ -290,23 +290,7 @@ class StreamingDenoiser:
             import threading
             import torch
             
-            # --- RAW SPECTROGRAM FIX ---
-            # Calculate stateless STFT so the UI top graph shows the true raw microphone
-            with torch.no_grad():
-                block_t = torch.from_numpy(block).float()
-                # Use same FFT settings as DeepFilterNet (48kHz)
-                window = torch.hann_window(960)
-                stft_res = torch.stft(block_t, n_fft=960, hop_length=480, window=window, return_complex=True)
-                mag = torch.abs(stft_res).numpy() / 480.0  # Normalize to match DFN dB scale
-            
-            def push(hist, mag_db):
-                col = mag_db[:, None].astype(np.float32)
-                if hist is None:
-                    hist = np.full((len(mag_db), 399), -150.0, dtype=np.float32)
-                return np.hstack([hist, col])[:, -400:]
-                
-            self.spec_hist = push(self.spec_hist, 20 * np.log10(mag.mean(axis=1) + 1e-9))
-            # ---------------------------
+
             self._cocktail_in_buf.append(block)
             
             # Calculate how many blocks equal 3 seconds
@@ -346,9 +330,36 @@ class StreamingDenoiser:
                     out = self._cocktail_out_buf.pop(0)
                 else:
                     out = np.zeros_like(block)
-            return out
         else:
-            return self._dfn_process_block(block)
+            out = self._dfn_process_block(block)
+
+        # =========================================================================================
+        # UNIFIED UI SPECTROGRAM RENDERER
+        # Both graphs now use the exact same PyTorch STFT math and run in perfect real-time sync.
+        # =========================================================================================
+        if not getattr(self, "is_offline_processing", False):
+            import torch
+            with torch.no_grad():
+                window = torch.hann_window(960)
+                
+                # Raw Mic
+                b_t = torch.from_numpy(block).float()
+                mag_in = torch.abs(torch.stft(b_t, n_fft=960, hop_length=480, window=window, return_complex=True)).numpy() / 480.0
+                
+                # AI Output
+                o_t = torch.from_numpy(out).float()
+                mag_out = torch.abs(torch.stft(o_t, n_fft=960, hop_length=480, window=window, return_complex=True)).numpy() / 480.0
+                
+                def push(hist, mag_db):
+                    col = mag_db[:, None].astype(np.float32)
+                    if hist is None:
+                        hist = np.full((len(mag_db), 399), -150.0, dtype=np.float32)
+                    return np.hstack([hist, col])[:, -400:]
+                    
+                self.spec_hist = push(self.spec_hist, 20 * np.log10(mag_in.mean(axis=1) + 1e-9))
+                self.enh_hist = push(self.enh_hist, 20 * np.log10(mag_out.mean(axis=1) + 1e-9))
+
+        return out
 
     @torch.no_grad()
     def _dfn_process_block(self, block: np.ndarray) -> np.ndarray:
@@ -507,22 +518,7 @@ class StreamingDenoiser:
         st.rt_factor = infer_ms / (t_frames * self.hop / self.sr * 1000)
         st.blocks += 1
 
-        # rolling spectrogram history (keep noisy + enhanced)
-        def push(hist, mag_db):
-            col = mag_db[:, None].astype(np.float32)
-            if hist is None:
-                hist = np.full((len(mag_db), 399), -150.0, dtype=np.float32)
-            return np.hstack([hist, col])[:, -400:]
 
-        if not getattr(self, "cocktail_mode", False):
-            self.spec_hist = push(self.spec_hist, 20 * np.log10(noisy_mag.mean(axis=0) + 1e-9))
-        
-        # Visually reflect the gate mute on the bottom spectrogram
-        vis_enh_mag = enh_mag.mean(axis=0)
-        if getattr(self, "_gate_gain", None) is not None:
-            vis_enh_mag *= self._gate_gain
-            
-        self.enh_hist = push(self.enh_hist, 20 * np.log10(vis_enh_mag + 1e-9))
 
         return out
 

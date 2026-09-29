@@ -1490,7 +1490,7 @@ class AudioDenoiserApp:
         # 1. CROP & FLIP (High Graph effect): Human speech lives in the lower 150 frequency bins.
         # By discarding the top 300 empty bins, the voice stretches vertically to fill the ENTIRE graph!
         # We also flip it so the deep bass is at the bottom, creating a massive visual "spike" effect.
-        arr = arr[:150, :]
+        arr = arr[:80, :]
         arr = np.flipud(arr)
         
         # 2. PUNCHY AUTO-GAINER: Optimized for maximum visual presentation impact
