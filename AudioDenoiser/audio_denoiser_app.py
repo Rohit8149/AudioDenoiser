@@ -1486,22 +1486,26 @@ class AudioDenoiserApp:
         if hist is None or hist.shape[1] < 2:
             return Image.new("RGB", (IMG_W, IMG_H), "black")
         arr = hist[:, -HIST_FRAMES:]
-        # pool 481 frequency bins -> 160 rows (axis 0!)
-        rows = 160
-        arr = arr[: rows * 3, :].reshape(rows, 3, -1).mean(axis=1)
-        # Slow Auto-Gainer: Adapts to quiet microphones, but shifts VERY slowly 
-        # so it doesn't cause distracting color flashes when you speak.
+        
+        # 1. CROP & FLIP (High Graph effect): Human speech lives in the lower 150 frequency bins.
+        # By discarding the top 300 empty bins, the voice stretches vertically to fill the ENTIRE graph!
+        # We also flip it so the deep bass is at the bottom, creating a massive visual "spike" effect.
+        arr = arr[:150, :]
+        arr = np.flipud(arr)
+        
+        # 2. PUNCHY AUTO-GAINER: Optimized for maximum visual presentation impact
         ceiling = float(np.percentile(arr, 99.8))
         if ceiling < -90.0:
             ceiling = -30.0  
         if not hasattr(self, "_spec_vmax"):
             self._spec_vmax = ceiling
         
-        # 0.99 makes it extremely slow and stable (takes several seconds to shift)
-        self._spec_vmax = 0.99 * self._spec_vmax + 0.01 * max(ceiling, -50.0)
+        # Medium speed tracking
+        self._spec_vmax = 0.95 * self._spec_vmax + 0.05 * max(ceiling, -50.0)
         
-        # Expanded 80dB dynamic range makes the visuals much smoother and easier to read
-        norm = np.clip((arr - (self._spec_vmax - 80)) / 80.0, 0, 1)
+        # 3. HIGH CONTRAST COLORS: Tight 45dB range. 
+        # We intentionally offset the math so the voice clips into the brightest yellow and orange colors!
+        norm = np.clip((arr - (self._spec_vmax - 50)) / 45.0, 0, 1)
         rgb = MAGMA[(norm * 255).astype(np.uint8)]    # [rows, T, 3]
         return Image.fromarray(rgb).resize((IMG_W, IMG_H), Image.BILINEAR)
 
